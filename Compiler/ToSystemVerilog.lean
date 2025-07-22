@@ -259,7 +259,7 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
     input x
     ,input y
     ,input z
-    ,ouput o
+    ,output o
   )
     assign o = body
   endmodule
