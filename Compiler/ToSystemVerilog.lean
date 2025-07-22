@@ -44,8 +44,7 @@ def getHWType' (shape : BitShape) : CompilerM HWType := do
 /-- HWType representing the tag for the given `type`  -/
 def tagHWType (type : Expr) : CompilerM HWType := do
   let .some shape ← bitShape? type | throwError "TODO unsized 4"
-  let .some tagBits := shape.tagBits? | throwError "TODO unsized 4"
-  return { width := tagBits }
+  return { width := shape.tagBits }
 
 def denylist: NameSet := (NameSet.empty
   |>.insert ``BitVec.add
@@ -73,7 +72,66 @@ def Meta.returnTypeT (type:Expr) (args:Array Expr): MetaM Expr := do forallTeles
 /-- Get return type of a function substituting the given args  -/
 def Meta.returnTypeV (e:Expr) (args:Array Expr): MetaM Expr := do forallTelescope (← inferType e) fun args' body => return body.replaceFVars args' args
 
+/-- Compiles the projection of a single field of a constructor given a `ValueExpr`.
+
+- `constructedVal`: The compiled value to extract the field from.
+- `constructedValType`: Type of `constructedVal`
+- `ctorVal`: The ctor used to make `constructedVal`
+- `fieldIdx`: Which field to extract
+- `fieldType`: The type of the field to extract
+
+For example, extracting `num1` and `num2` (one call for each) from the `ValueExpr` of `v` in
+```
+inductive OneOrTwo where
+  | one BitVec 1
+  | two (BitVec 1, BitVec 2)
+let v := OneOrTwo.two (1, 2)
+let .two (num1, num2) := v | panic! ""
+```
+Or extracting `y` from the `ValueExpr` of `v` in
+```
+structure MyStruct where
+  x : BitVec 1
+  y : BitVec 2
+  z : BitVec 3
+let v := {x:=1,y:=2,z:=3}
+v.y
+```
+-/
+def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctorVal : ConstructorVal) (fieldIdx:Nat) (fieldType:Expr) : CompilerM ValueExpr := do
+  let (tagWidth, fieldShapes) ← do
+    let shape ← bitShape! constructedValType
+    match shape with
+    | .union variants =>
+      let .struct fieldShapes := variants[ctorVal.cidx]! | throwError "HDLean Internal Error: ctor variant shape not struct: {ctorVal}"
+      pure (shape.tagBits, fieldShapes)
+    | .struct fieldShapes =>
+      assert! ctorVal.cidx = 0
+      pure (0, fieldShapes)
+    | _ => throwError "HDLean Internal Error: shape unexpected: {shape}"
+
+  if fieldIdx >= fieldShapes.size then
+    throwError "Projection index out of bounds: {fieldIdx} for {ctorVal.induct} with {fieldShapes.size} fields"
+
+  let mut start := tagWidth
+  for i in [0:fieldIdx] do
+    start := start + fieldShapes[i]!.totalWidth
+  let width := fieldShapes[fieldIdx]!.totalWidth
+  let name ← mkFreshUserName (.num (ctorVal.name ++ `field) fieldIdx)
+  addItem <| .var {name, type := ← getHWType fieldType}
+  addItem <| .assignment .blocking (.identifier name) (.bitSelect constructedVal [start:start+width])
+  return .identifier name
+
 mutual
+/-- Compiles a projection expression `Expr.proj` (e.g., `a.1`) for structures and single-ctor inductives -/
+partial def compileExprProj (typeName:Name) (idx:Nat) (struct:Expr) : CompilerM ValueExpr := do
+  compileFieldProj
+    (constructedVal:=← compileValue struct)
+    (constructedValType:=← inferType struct)
+    (ctorVal:=Lean.getStructureCtor (← getEnv) typeName)
+    (fieldIdx:=idx)
+    (fieldType:=← inferType (.proj typeName idx struct))
+
 /-- Compiles a recursor.
 - Tags are stored in the low bits and fields are ordered first at lowest idx and last at highest index.
 - `args` should (given correct usage of recursor) be `#[params, motives, minors, indices, major, other...]`.
@@ -91,7 +149,6 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   -- If the type depends on the major premise's values this will fail, otherwise whnf will simplify to the monomorphic type. The `+1` is for the major argument.
   let retType ← whnf <| mkAppN motive args[recursor.getFirstIndexIdx:recursor.getFirstIndexIdx+recursor.numIndices+1]
   dbg!' retType
-  let params := args[0:recursor.numParams].toArray
   let minors := args[recursor.getFirstMinorIdx:recursor.getFirstIndexIdx].toArray
   if !(← forallIsSynthesizable retType) then throwError "Return type of motive not synthesizable: {retType}"
   let majorVal ← compileValue major
@@ -101,31 +158,21 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   let some shape ← bitShape? majorType | throwError "Major type not synthesizable: {majorType}"
   let majorTag ← mkFreshUserName (recursor.getMajorInduct ++ `tag)
   addItem <| .var { name := majorTag, type := ← tagHWType majorType }
-  addItem <| .assignment .blocking (.bitSelect (.identifier majorTag) [0:shape.tagBits?.get!]) majorVal
+  addItem <| .assignment .blocking (.identifier majorTag) (.bitSelect majorVal [0:shape.tagBits])
   dbg!' "before cases"
   let cases ← minors.mapIdxM fun idx minor => do
     let ctorVal ← Lean.getConstInfoCtor majorInductVal.ctors[idx]!
-    -- dbg!' ← whnf <| mkAppN recursor.rules[idx]!.rhs args[0:recursor.getFirstIndexIdx]
-    let tagVal ← compileValue ((mkAppN (.const ``Fin.mk []) #[(.lit <| .natVal minors.size), .lit <| .natVal idx, .const ``lcProof []]))
-
-    -- Extract/slice each field of the `idx`th ctor to a new `.var` declaration with a corresponding free variable. Apply each new free variable to the minor premise and compile the `minor` function call with the new free variables in context.
-    let .struct ctorFieldShapes ← bitShape! <| mkAppN (.const ctorVal.name []) params | throwError "HDLean Internal Error: ctor shape is not a struct"
-    let mut fieldNames : Array Name := #[]
-    let mut fieldStart := shape.tagBits?.get! -- First field after tag
-    let mut fieldTypes : Array Expr := #[]
-    for fieldIdx in [0:ctorVal.numFields] do
-      let name ← mkFreshUserName (.num (recursor.getMajorInduct ++ `field) fieldIdx)
-      let width := ctorFieldShapes[fieldIdx]!.totalWidth
-      addItem <| .var {name, type := {width}}
-      addItem <| .assignment .blocking (.identifier name) (.bitSelect majorVal [fieldStart:fieldStart+width])
-      fieldNames := fieldNames.push name
-      fieldTypes := fieldTypes.push (← lambdaTelescope minor fun args _body => inferType args[fieldIdx]!)
-      fieldStart := fieldStart + width -- Next field after current field
-    -- Compile with the free variables associated with each field added to context.
-    let result ← withLocalDeclsDND (fieldNames.zip fieldTypes) fun fieldFVarIds =>
-      let fieldFVarIds' := fieldFVarIds.map (·.fvarId!)
-      withReader (fun ctx => {ctx with env := ctx.env.insertMany <| fieldFVarIds'.zip (fieldNames.map .identifier)})
-      <| compileValue (dbg! mkAppN minor fieldFVarIds)
+    let tagVal ← compileValue <| mkAppN (.const ``Fin.mk []) #[(.lit <| .natVal minors.size), .lit <| .natVal idx, .const ``lcProof []]
+    -- Infer field types from minor premise's argument types
+    let fieldTypes ← (Array.range ctorVal.numFields).mapM fun fieldIdx => lambdaTelescope minor fun args _body => inferType args[fieldIdx]!
+    -- Extract fields with `compileFieldProj`.
+    let fieldVals ← (Array.range ctorVal.numFields).mapM fun fieldIdx => compileFieldProj majorVal majorType ctorVal fieldIdx fieldTypes[fieldIdx]!
+    let binderNames ← (Array.range ctorVal.numFields).mapM fun fieldIdx => mkFreshUserName (.num (ctorVal.name ++ `field) fieldIdx)
+    -- Apply minor premise to extracted fields.
+    let result ← withLocalDeclsDND (binderNames.zip fieldTypes) fun fieldFVarIds => do
+      let mapping := fieldFVarIds.mapIdx (fun i fvarId => (fvarId.fvarId!, fieldVals[i]!))
+      withReader (fun ctx => {ctx with env := ctx.env.insertMany mapping})
+        <| compileValue (mkAppN minor fieldFVarIds)
     return dbg! (tagVal, result)
   dbg!' "after cases"
   let recRes ← mkFreshUserName (recursor.getMajorInduct ++ `recRes)
@@ -160,8 +207,8 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let #[n, val, _isLt] := args | throwError "Invalid number of arguments ({args.size}) for Fin.mk"
       let val ← compileValue val
       let n ← unsafe Meta.evalExpr Nat (.const ``Nat {}) n
-      let lit := match val.emit with |.none => "" |.some val => s!"{n.ceilLog2}'{val}"
-      return .literal lit -- Add width annotation
+      let lit := match val.emit with |.none => "" |.some val => s!"{n.ceilLog2}'{val}" -- Add width annotation
+      return .literal lit
     | ``BitVec.mul =>
       let #[_n, x, y] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.mul"
       let x ← compileValue x
@@ -175,7 +222,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     | fn =>
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
-      | .ctorInfo val => throwError "TODO ctor with arguments: {e}; val={val}"
+      | .ctorInfo val => throwError "TODO ctor with arguments: ctor={fn},args={args},val={val},e={e} "
       | _ => throwError "Unsupported function application: {e}"
   | .const name _ =>
     if let .ctorInfo val ← Lean.getConstInfo name then
@@ -185,6 +232,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     else
       throwError "Unsupported constant which is not unfoldable: {name} := {e}"
   | .lit e => return .literal <| match e with |.natVal n => s!"{n}" |.strVal s => s
+  | .proj typeName idx s => compileExprProj typeName idx s
   | _ => throwError "Unsupported expression: {e}"
 end
 
@@ -206,10 +254,9 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
       let letFVar ← mkFreshFVarId
       withReader (fun ctx => { ctx with env := ctx.env.insert letFVar (.identifier tmpName) }) do
         compileAssignment space (body.instantiate1 (.fvar letFVar))
-  | .app .. | .const .. =>
+  | .app .. | .const .. | .proj .. =>
       let value ← compileValue e
       addItem <| .assignment .blocking space value
-  | .proj typeName idx s => throwError "TODO projection: type={typeName},idx={idx},s={s};{e}"
   | e => throwError "Unsupported statement expression: {e}"
 
 /-- Add module(s) corresponding to a function to the back of the list to be emitted as well as returning it. `fun x y z => body` becomes
@@ -243,7 +290,7 @@ partial def compileFun (fn: Expr): CompilerM Module := do
 
   for arg in args do
     let argType ← inferType arg
-    let .some argShape ← bitShape? argType | throwError "TODO unsized 2"
+    let .some argShape ← bitShape? (dbg! argType) | throwError "Argument `{arg}:{argType}` is unsynthesizable"
     ports := ports.push {
       name := ← arg.fvarId!.getUserName,
       type := { width := argShape.totalWidth },
@@ -348,10 +395,41 @@ structure MyS where
   a: Fin 2
   b: Fin 3
   c: BitVec 4
+#eval Lean.getProjectionFnInfo? ``MyS.a
+#eval do return Lean.getProjFnInfoForField? (← getEnv) ``MyS `a
+#eval do return Lean.getProjFnForField? (← getEnv) ``MyS `a
+#eval do return Lean.getStructureFields (← getEnv) ``MyS
+#eval do return Lean.getFieldInfo? (← getEnv) ``MyS `a
+#eval do return Lean.getStructureInfo (← getEnv) ``MyS |>.getProjFn? 0
+#check Hdlean.Compiler.MyS.a
 def MyS.test1 : MyS:= {a:=1,b:=2,c:=3:MyS}
 def MyS.test2 : Fin 2:= {a:=1,b:=2,c:=3:MyS}.a
+def MyS.test3 (a: Fin 2): Fin 2:= {a,b:=2,c:=3:MyS}.a
+def MyS.test4 (s: MyS): Fin 2:= s.a
+def MyS.test5 (s: MyS): Fin 3:= s.b
 #eval do println! ← emit (``MyS.test1)
+#eval do return ToString.toString <| ← whnf <| .app (.const ``MyS.a []) (.const ``MyS.test1 [])
 #eval do println! ← emit (``MyS.test2)
+#eval do println! ← emit (``MyS.test3)
+#eval do println! ← emit (``MyS.test4)
+#eval do println! ← emit (``MyS.test5)
+structure DependentStructure where
+  n : Nat
+  d : Vector Bool n
+def DependentStructure.test1 (s: DependentStructure) := s.d
+def DependentStructure.test2 (s: DependentStructure)(h:s.n=3) : Vector Bool 3 := h ▸ s.d
+#eval do println! ← emit (``DependentStructure.test1)
+#eval do println! ← emit (``DependentStructure.test2)
+structure DependentStructure' (n:Nat) where
+  d : Vector Bool n
+  g : Vector Bool (2 * n)
+def DependentStructure'.test1 (s: DependentStructure' 4) := s.d
+def DependentStructure'.test2 (s: DependentStructure' 3) := s.g
+#eval do println! ← emit (``DependentStructure'.test1)
+#eval do println! ← emit (``DependentStructure'.test2)
+
+#eval do return Lean.getStructureInfo (← getEnv) ``DependentStructure |>.getProjFn? 1 |>.get!
+#check Hdlean.Compiler.DependentStructure.d
 
 def sorryP {p:Prop}: p := sorry
 def len_manual (x: Vector α n): Fin (n+1) := x.elimAsList fun l hl => match l with
@@ -369,9 +447,9 @@ def len_manual_mono : Fin 3 := len_manual #v[0,1]
 #eval show MetaM _ from do println! (← Lean.getConstInfoRec ``Bool.rec)
 
 #eval do return ToString.toString (← (withTransparency .all <| binderTelescope (.const ``mynot []) fun _args body =>  Meta.unfoldDefinition? (dbg! body)))
-#eval do ((← (withTransparency .all <| binderTelescope (.const ``mynot []) fun _args body => do return Meta.unfoldDefinition? (dbg! (← Lean.Compiler.LCNF.inlineMatchers (dbg! body))))))
-#eval do ( (binderTelescope (.const ``mynot []) fun _args body => do return (dbg! ← delta? body)))
-#eval do ( (Lean.Compiler.LCNF.inlineMatchers (.const ``mynot [])))
+#eval do (← (withTransparency .all <| binderTelescope (.const ``mynot []) fun _args body => do return Meta.unfoldDefinition? (dbg! (← Lean.Compiler.LCNF.inlineMatchers (dbg! body)))))
+#eval do (binderTelescope (.const ``mynot []) fun _args body => do return (dbg! ← delta? body))
+#eval do (Lean.Compiler.LCNF.inlineMatchers (.const ``mynot []))
 
 -- TODO
 -- How does inlineMatchers work in LCNF, how is Cases made, and how does bindCases work?
@@ -406,19 +484,6 @@ def len_manual_mono : Fin 3 := len_manual #v[0,1]
   -- whnfImp body
 )
 
-
-/-
-deriving instance Repr for
-  LCNF.Arg,
-  LCNF.LitValue,
-  LCNF.LetValue,
-  LCNF.LetDecl,
-  LCNF.LitValue,
-  LCNF.LetValue,
-  LCNF.Param,
-  LCNF.Code
-#eval do println! ← Lean.Compiler.LCNF.ToLCNF.toLCNF (mkAppN (.const ``mynot []) #[.const ``Bool.true []]) |>.run
- -/
 end Testing
 
 end Hdlean.Compiler
