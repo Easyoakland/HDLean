@@ -240,19 +240,13 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
   match e with
   | .mdata _ body => compileAssignment space body
   | .letE _ _ value body _ => do
-      let valueType ← inferType value
-      dbg!' ""
-      let valueHWType ← getHWType valueType
-      let tmpName ← mkFreshUserName `let
-      addItem <| .var {
-        name := tmpName,
-        type := valueHWType
-      }
       let valueVal ← compileValue value
-      dbg!' valueVal
-      addItem <| .assignment .blocking (.identifier tmpName) valueVal
+      let valueType ← inferType value
+      let name ← mkFreshUserName `let
+      addItem <| .var { name, type := ← getHWType valueType }
+      addItem <| .assignment .blocking (.identifier name) valueVal
       let letFVar ← mkFreshFVarId
-      withReader (fun ctx => { ctx with env := ctx.env.insert letFVar (.identifier tmpName) }) do
+      withReader (fun ctx => { ctx with env := ctx.env.insert letFVar (.identifier name) }) do
         compileAssignment space (body.instantiate1 (.fvar letFVar))
   | .app .. | .const .. | .proj .. =>
       let value ← compileValue e
