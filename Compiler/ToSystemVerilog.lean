@@ -47,10 +47,16 @@ def tagHWType (type : Expr) : CompilerM HWType := do
   return { width := shape.tagBits }
 
 def denylist: NameSet := (NameSet.empty
-  |>.insert ``BitVec.add
-  |>.insert ``BitVec.mul
   |>.insert ``Fin.mk
   |>.insert ``BitVec.ofFin
+  |>.insert ``BitVec.add
+  |>.insert ``BitVec.mul
+  |>.insert ``BitVec.ult
+  |>.insert ``BitVec.ule
+  -- |>.insert ``instLTBitVec
+  -- |>.insert ``instLEBitVec
+  -- |>.insert ``instDecidableLtBitVec
+  -- |>.insert ``instDecidableLeBitVec
 )
 def whnf := @whnfWithDenylist' (inlineMatchers:=true) denylist
 -- abbrev binderTelescope {α} e k (reducing:=true) (maxVars?:=Option.none) (cleanupAnnotations:=false) := @Meta.binderTelescope (α:=α) e k (reducing:=reducing) (denylist:=denylist) maxVars? cleanupAnnotations
@@ -58,8 +64,6 @@ def whnf := @whnfWithDenylist' (inlineMatchers:=true) denylist
 /-- A function is synthesizable if all arguments and the return type are synthesizable. This means that they either can be erased (`Sort _`) or have a known unboxed size. This also works for a function with 0 args (a type). -/
 def forallIsSynthesizable (type:Expr): MetaM Bool := forallTelescope type fun args body => do
   let is_synthesizable (type:Expr): MetaM Bool := do
-    -- Types and Prop are synthesizable (to nothing).
-    if (← isTypeFormerType type) then return true
     -- If has unboxed size then it can be represented with that size in synthesis.
     if (←(bitShape? type)).isSome then return true
     -- Otherwise, is not synthesizable
@@ -122,6 +126,21 @@ def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctor
   addItem <| .assignment .blocking (.identifier name) (.bitSelect constructedVal [start:start+width])
   return .identifier name
 
+-- Substitute < notation on BitVec with this, which is the same but easier to detect and block during compilation.
+-- @[inline, reducible] def _root_.BitVec.lt (x y: BitVec n) := x < y
+-- @[inline, reducible] def _root_.BitVec.ble (x y: BitVec n): Bool := x ≤ y
+-- @[inline, reducible] def _root_.BitVec.blt (x y: BitVec n): Bool := x < y
+-- Substitute < notation on BitVec with this, which is the same but easier to detect and block during compilation.
+-- @[inline, reducible] def instLTBitVecHW: LT (BitVec w) where
+--   lt := BitVec.lt
+-- @[inline, reducible] def instLEBitVecHW: LE (BitVec w) where
+--   le := BitVec.le
+@[inline, reducible] instance instDecidableLtBitVecHW (x y : BitVec w) : Decidable (LT.lt x y) :=
+  if h: x.ult y then .isTrue (by bv_decide)
+    -- .isTrue (by exact BitVec.ult_iff_lt.mp h)
+  else .isFalse (by bv_decide)
+    -- .isFalse (Std.Tactic.BVDecide.Normalize.BitVec.lt_ult x y ▸ h)
+
 mutual
 /-- Compiles a projection expression `Expr.proj` (e.g., `a.1`) for structures and single-ctor inductives -/
 partial def compileExprProj (typeName:Name) (idx:Nat) (struct:Expr) : CompilerM ValueExpr := do
@@ -181,6 +200,13 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorType) cases.toList (.some undefinedValue)]
   return .identifier recRes
 
+/-- Returns a substituted `Expr` if implemented by something else for hardware synthesis -/
+partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
+  pure <| match e with
+  -- | (.proj ``LT 0 (.app (.const ``instLTBitVec []) _)) => .some ``BitVec.lt
+  | (.const ``instDecidableLtBitVec []) => .some ``instDecidableLtBitVecHW
+  | _ => .none
+
 partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   let e ← whnf (dbg! e)
   let e := (dbg! e).eta
@@ -192,6 +218,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     | .none => throwError "Unknown free variable: {fvarId}"
   | .app .. =>
     let (fn, args) := e.getAppFnArgs
+    let fn := if let .some fn := dbg! ← HWImplementedBy? (dbg! e.getAppFn) then fn else fn
     if fn.isAnonymous then throwError "non-constant application {e}"
     dbg!' fn
     let info ← Lean.getConstInfo fn
@@ -219,6 +246,20 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .add x y
+    | ``BitVec.ult =>
+      let #[_n, x, y] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ult"
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .lt x y
+    | ``BitVec.ule =>
+      let #[_n, x, y] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ule"
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .le x y
+    -- | ``instLTBitVec =>
+    --   compileValue (.const ``instLTBitVecHW [])
+    -- | ``instLEBitVec =>
+    --   compileValue (.const ``instLEBitVecHW [])
     | fn =>
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
@@ -376,11 +417,24 @@ def mynotE' (x: Either LBool LBool): LBool := match x with
 def mynotE'' (x: Either Bool LBool): Either LBool Bool := match x with
   | .left v => .right <| mynot v
   | .right v => .left <| mynotL v
+def mynotEIf (x: Either LBool LBool): Fin 3 :=
+  if let .left _ := x then 0
+  else if let .right _ := x then 1
+  else 2
+def mynotEIf' (x: Bool): Fin 2 :=
+  if h:x then 0
+  else if h2:!x then 1
+  else suffices False from this.elim
+    by cases x <;> contradiction
+
 #eval do println! ← emit (``mynot)
 #eval do println! ← emit (``mynotL)
 #eval do println! ← emit (``mynotE)
 #eval do println! ← emit (``mynotE')
 #eval do println! ← emit (``mynotE'')
+#eval do println! ← emit (``mynotEIf)
+#eval do println! ← emit (``mynotEIf')
+
 inductive EvenOddList (α : Type u) : Bool → Type u where
   | nil : EvenOddList α true
   | cons : α → EvenOddList α isEven → EvenOddList α (not isEven)
@@ -477,6 +531,38 @@ def len_manual_mono : Fin 3 := len_manual #v[0,1]
   -- `cases` now contains [false, true] for each branch
   -- whnfImp body
 )
+
+
+def _root_.BitVec.natMax {w:Nat}: BitVec w := -1 -- since -1 is all `1`s it is also the largest unsigned value
+
+def wouldOverflow (n m : BitVec w): Bool :=
+  if n + m < n then true
+  else if n + m < m then true
+  else false
+
+def saturatingAdd (n m : BitVec w): BitVec w :=
+  if wouldOverflow n m then BitVec.natMax else
+  n + m
+def t := fun (x y : BitVec 3) => (x < y: Bool)
+def t2 := fun (x y : BitVec 3) => x.ult y
+def t3 := fun (x y : BitVec 3) => x.ule y
+#print t
+
+example: saturatingAdd 0#2 3#2 = 3#2 := rfl
+example: saturatingAdd 1#2 3#2 = 3#2 := rfl
+example: saturatingAdd 2#2 3#2 = 3#2 := rfl
+example: saturatingAdd 2#2 2#2 = 3#2 := rfl
+example: saturatingAdd 3#2 3#2 = 3#2 := rfl
+open scoped BitVec in
+#eval
+  let a: BitVec 2 := 3#'(by omega)
+  a
+
+def saturatingAddMono := saturatingAdd (w:=2)
+#eval do println! ← emit (``t)
+#eval do println! ← emit (``t2)
+#eval do println! ← emit (``t3)
+#eval do println! ← emit (``saturatingAddMono)
 
 end Testing
 
