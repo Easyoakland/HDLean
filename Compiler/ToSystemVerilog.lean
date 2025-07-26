@@ -197,7 +197,7 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
         <| compileValue (mkAppN minor fieldFVarIds)
     return dbg! (tagVal, result)
   dbg!' "after cases"
-  let recRes ← mkFreshUserName (recursor.getMajorInduct ++ `recRes)
+  let recRes ← mkFreshUserName (recursor.getMajorInduct ++ `recRes |>.str ((ToString.toString retType).takeWhile fun c => !c.isWhitespace))
   let retHWType ← getHWType retType
   addItem <| .var { name := recRes, type := retHWType }
   addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorType) cases.toList (.some undefinedValue)]
