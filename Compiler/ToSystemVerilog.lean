@@ -5,13 +5,12 @@ import Compiler
 import Std
 
 open Std (HashMap HashSet)
-
 open Lean hiding Module
 open Meta
 open Hdlean.ToData
 open Compiler
 open Data.SystemVerilog
-open BitShape
+open BitShape hiding struct union
 
 namespace Hdlean.Compiler
 
@@ -107,12 +106,12 @@ def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctor
     let shape ← bitShape! constructedValType
     match shape with
     | .union variants =>
-      let .struct fieldShapes := variants[ctorVal.cidx]! | throwError "HDLean Internal Error: ctor variant shape not struct: {ctorVal}"
+      let .some variant := variants[ctorVal.cidx]? | throwError "ctorVal is invalid variant: {ctorVal} of {variants}"
+      let .struct fieldShapes := variant | throwError "HDLean Internal Error: ctor variant shape not struct: {ctorVal} is {variants[ctorVal.cidx]!}"
       pure (shape.tagBits, fieldShapes)
     | .struct fieldShapes =>
       assert! ctorVal.cidx = 0
       pure (0, fieldShapes)
-    | _ => throwError "HDLean Internal Error: shape unexpected: {shape}"
 
   if fieldIdx >= fieldShapes.size then
     throwError "Projection index out of bounds: {fieldIdx} for {ctorVal.induct} with {fieldShapes.size} fields"
@@ -181,7 +180,11 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   dbg!' "before cases"
   let cases ← minors.mapIdxM fun idx minor => do
     let ctorVal ← Lean.getConstInfoCtor majorInductVal.ctors[idx]!
-    let tagVal ← compileValue <| mkAppN (.const ``Fin.mk []) #[(.lit <| .natVal minors.size), .lit <| .natVal idx, .const ``lcProof []]
+    let tagVal ← compileValue <| mkAppN (.const ``Fin.mk []) #[
+      .lit <| .natVal (dbg! minors.size),
+      .lit <| .natVal idx,
+      .const ``lcProof []
+    ]
     -- Infer field types from minor premise's argument types
     let fieldTypes ← (Array.range ctorVal.numFields).mapM fun fieldIdx => lambdaTelescope minor fun args _body => inferType args[fieldIdx]!
     -- Extract fields with `compileFieldProj`.
@@ -199,6 +202,32 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   addItem <| .var { name := recRes, type := retHWType }
   addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorType) cases.toList (.some undefinedValue)]
   return .identifier recRes
+
+/-- Compile a constructor in the opposite way that a FieldProjection is compiled.  -/
+partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Array Expr) : CompilerM ValueExpr := do
+  let params := args.extract 0 ctor.numParams
+  let fields := args.extract ctor.numParams (ctor.numParams+ctor.numFields)
+  dbg!' (params, fields)
+  let inductType := dbg! mkAppN (.const ctor.induct levels) params
+  let shape ← bitShape! inductType
+  let tagWidth := shape.tagBits
+  let fieldShapes ← match shape with
+    | .union variants =>
+      let .some variant := variants[ctor.cidx]? | throwError "ctor idx invalid: {ctor.cidx} / {variants.size}"
+      let .struct fieldShapes := variant | throwError "HDLean Internal Error: variant shape for constructor {ctor.cidx} of {ctor.induct} is not struct "
+      pure fieldShapes
+    | .struct fieldShapes => pure fieldShapes
+  if fieldShapes.size != fields.size then throwError "HDLean Internal Error: field count mismatch for {ctor.name} (expected {fieldShapes.size}, got {fields.size})"
+  let fieldVals ← fields.mapM (fun field => compileValue (dbg! field))
+  let tagVal ← if tagWidth == 0 then pure #[] else
+    let tagVal ← compileValue <| mkAppN (.const ``BitVec.ofNat []) #[
+      .lit <| .natVal tagWidth,
+      .lit <| .natVal ctor.cidx,
+    ]
+    pure #[tagVal]
+  dbg!' (fieldVals, tagVal)
+  return .concatenation <| Array.toList <| fieldVals ++ tagVal
+
 
 /-- Returns a substituted `Expr` if implemented by something else for hardware synthesis -/
 partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
@@ -263,7 +292,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     | fn =>
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
-      | .ctorInfo val => throwError "TODO ctor with arguments: ctor={fn},args={args},val={val},e={e} "
+      | .ctorInfo val => compileCtor (dbg! val) e.getAppFn.constLevels! (dbg! args)
       | _ => throwError "Unsupported function application: {e}"
   | .const name _ =>
     if let .ctorInfo val ← Lean.getConstInfo name then
@@ -466,8 +495,8 @@ structure DependentStructure where
   d : Vector Bool n
 def DependentStructure.test1 (s: DependentStructure) := s.d
 def DependentStructure.test2 (s: DependentStructure)(h:s.n=3) : Vector Bool 3 := h ▸ s.d
-#eval do println! ← emit (``DependentStructure.test1)
-#eval do println! ← emit (``DependentStructure.test2)
+#eval try do println! ← emit (``DependentStructure.test1); panic! "should error" catch _ => pure ()
+#eval try do println! ← emit (``DependentStructure.test2); panic! "should error" catch _ => pure ()
 structure DependentStructure' (n:Nat) where
   d : Vector Bool n
   g : Vector Bool (2 * n)
@@ -475,6 +504,11 @@ def DependentStructure'.test1 (s: DependentStructure' 4) := s.d
 def DependentStructure'.test2 (s: DependentStructure' 3) := s.g
 #eval do println! ← emit (``DependentStructure'.test1)
 #eval do println! ← emit (``DependentStructure'.test2)
+section
+local instance : OfNat Bool 0 := ⟨false⟩
+local instance : OfNat Bool 1 := ⟨true⟩
+def DependentStructure'.t: DependentStructure' 3 := {d:=#v[1,0,1],g:=#v[0,0,1,0,0,1]}
+end
 
 #eval do return Lean.getStructureInfo (← getEnv) ``DependentStructure |>.getProjFn? 1 |>.get!
 #check Hdlean.Compiler.DependentStructure.d
@@ -517,21 +551,6 @@ def len_manual_mono : Fin 3 := len_manual #v[0,1]
   let x ← mkFreshExprMVar (Expr.const ``Bool [])
   let applied := mkApp mynot x
   whnfImp applied  -- Still stuck, but now with metavariable instead of free var
-
--- #check Meta.caseValues
-#eval (binderTelescope (.const ``mynot []) fun args body => do
-  dbg_trace args
-  dbg_trace body
-  let x ← mkFreshExprMVar (Expr.const ``Bool [])
-  let cases ← withLocalDecl `x .default (.const ``Bool []) fun x => do
-    let body := mkApp (.const ``mynot []) x
-    let cases ← x.mvarId!.cases (dbg! args[0]!.fvarId!) #[AltVarNames.mk .false [dbg! ← args[0]!.fvarId!.getUserName]]
-    pure cases
-    -- pure (cases.map fun (case, _) => case.fields[0]!)
-  -- `cases` now contains [false, true] for each branch
-  -- whnfImp body
-)
-
 
 def _root_.BitVec.natMax {w:Nat}: BitVec w := -1 -- since -1 is all `1`s it is also the largest unsigned value
 
