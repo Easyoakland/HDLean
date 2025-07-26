@@ -1,0 +1,32 @@
+name = "hdlean"
+version = "0.1.0"
+defaultTargets = ["hdlean"]
+testDriver = "test"
+
+[[lean_lib]]
+name = "Hdlean"
+
+#[[require]]
+#name = "mathlib"
+#scope = "leanprover-community"
+
+#[[require]]
+#name = "Canonical"
+#scope = "chasenorman"
+
+[[lean_lib]]
+name = "Hdlean2"
+
+[[lean_lib]]
+name = "Compiler"
+
+[[lean_exe]]
+name = "hdlean"
+root = "Main"
+supportInterpreter = true # needed for evalConst
+
+[[lean_exe]]
+name = "test"
+root = "Test"
+supportInterpreter = true # needed for evalConst
+
