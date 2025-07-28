@@ -34,16 +34,12 @@ def CompilerM.run' (x: CompilerM α): MetaM α :=
 def addItem (item : ModuleItem) : CompilerM Unit :=
   modify fun s => { s with items := s.items.push item }
 
-def getHWType (type : Expr) : CompilerM HWType := do
-  let .some shape ← bitShape? type | throwError "TODO unsized 3"
-  return { width := shape.totalWidth }
--- TODO delete getHWType: take `BitShape` not `Expr` to avoid doubling work when caller already has the shape.
-def getHWType' (shape : BitShape) : CompilerM HWType := do
+/-- HWType representing the given type in its entirety (both tag and payload). -/
+def getHWType (shape : BitShape) : CompilerM HWType := do
   return { width := shape.totalWidth }
 
 /-- HWType representing the tag for the given `type`  -/
-def tagHWType (type : Expr) : CompilerM HWType := do
-  let .some shape ← bitShape? type | throwError "TODO unsized 4"
+def tagHWType (shape : BitShape) : CompilerM HWType := do
   return { width := shape.tagBits }
 
 def denylist: NameSet := (NameSet.empty
@@ -123,7 +119,8 @@ def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctor
     start := start + fieldShapes[i]!.totalWidth
   let width := fieldShapes[fieldIdx]!.totalWidth
   let name ← mkFreshUserName (.num (ctorVal.name ++ `field) fieldIdx)
-  addItem <| .var {name, type := ← getHWType fieldType}
+  let fieldShape ← bitShape! fieldType
+  addItem <| .var {name, type := ← getHWType fieldShape}
   addItem <| .assignment .blocking (.identifier name) (.bitSelect constructedVal [start:start+width])
   return .identifier name
 
@@ -176,10 +173,10 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   let majorType ← inferType major
   let majorInductVal ← Lean.getConstInfoInduct recursor.getMajorInduct
   dbg!' majorType
-  let some shape ← bitShape? majorType | throwError "Major type not synthesizable: {majorType}"
+  let some majorShape ← bitShape? majorType | throwError "Major type not synthesizable: {majorType}"
   let majorTag ← mkFreshUserName (recursor.getMajorInduct ++ `tag)
-  addItem <| .var { name := majorTag, type := ← tagHWType majorType }
-  addItem <| .assignment .blocking (.identifier majorTag) (.bitSelect majorVal [0:shape.tagBits])
+  addItem <| .var { name := majorTag, type := ← tagHWType majorShape }
+  addItem <| .assignment .blocking (.identifier majorTag) (.bitSelect majorVal [0:majorShape.tagBits])
   dbg!' "before cases"
   let cases ← minors.mapIdxM fun idx minor => do
     let ctorVal ← Lean.getConstInfoCtor majorInductVal.ctors[idx]!
@@ -201,12 +198,12 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
     return dbg! (tagVal, result)
   dbg!' "after cases"
   let recRes ← mkFreshUserName (recursor.getMajorInduct ++ `recRes |>.str ((ToString.toString retType).takeWhile fun c => !c.isWhitespace))
-  let retHWType ← getHWType retType
+  let retHWType ← getHWType (← bitShape! retType)
   addItem <| .var { name := recRes, type := retHWType }
   match minors.size with
   | 0 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) undefinedValue
   | 1 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) cases[0]!.snd
-  | _ => addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorType) cases.toList (.some undefinedValue)]
+  | _ => addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorShape) cases.toList (.some undefinedValue)]
   return .identifier recRes
 
 /-- Compile a constructor in the opposite way that a FieldProjection is compiled.  -/
@@ -317,8 +314,9 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
   | .letE _ _ value body _ => do
       let valueVal ← compileValue value
       let valueType ← inferType value
+      let valueShape ← bitShape! valueType
       let name ← mkFreshUserName `let
-      addItem <| .var { name, type := ← getHWType valueType }
+      addItem <| .var { name, type := ← getHWType valueShape }
       addItem <| .assignment .blocking (.identifier name) valueVal
       let letFVar ← mkFreshFVarId
       withReader (fun ctx => { ctx with env := ctx.env.insert letFVar (.identifier name) }) do
