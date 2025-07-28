@@ -1,8 +1,12 @@
 import Lean
 
+section OrphanInstances
+
 @[instance low]
 def instToStringOfRepr [Repr α]: ToString α :=
  {toString self := ToString.toString $ Repr.reprPrec self 0}
+
+instance (a:Nat) (s:Std.Range): Decidable (a ∈ s) := instDecidableAnd
 
 deriving instance Repr for
   Lean.ConstantKind,
@@ -44,6 +48,15 @@ deriving instance Repr for
   Lean.IR.CompilerState
 
 deriving instance Repr for Lean.ConstMap
+deriving instance Repr for
+  Lean.LocalDecl,
+  Lean.Meta.Match.DiscrInfo,
+  Lean.Meta.Match.MatcherInfo
+
+deriving instance Repr for Lean.StructureParentInfo
+
+end OrphanInstances
+
 -- Debug variant which doesn't return anything. Only works in `IO`.
 elab "dbg!'" stx:term : term => do
   let str := String.trim <| match stx.raw.reprint with
