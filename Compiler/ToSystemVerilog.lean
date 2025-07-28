@@ -256,7 +256,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   | .app .. =>
     let (fn, args) := e.getAppFnArgs
     let fn := if let .some fn := dbg! ← HWImplementedBy? (dbg! e.getAppFn) then fn else fn
-    if fn.isAnonymous then throwError "non-constant application {e}"
+    if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}, whnf := {← whnf e}"
     dbg!' fn
 
     match fn with
