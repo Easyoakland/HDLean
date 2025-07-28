@@ -3,9 +3,6 @@ version = "0.1.0"
 defaultTargets = ["hdlean"]
 testDriver = "test"
 
-[[lean_lib]]
-name = "Hdlean"
-
 #[[require]]
 #name = "mathlib"
 #scope = "leanprover-community"
@@ -15,7 +12,7 @@ name = "Hdlean"
 #scope = "chasenorman"
 
 [[lean_lib]]
-name = "Hdlean2"
+name = "Hdlean"
 
 [[lean_lib]]
 name = "Compiler"
