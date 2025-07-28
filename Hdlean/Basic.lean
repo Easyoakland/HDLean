@@ -56,6 +56,13 @@ deriving instance Repr for
   Lean.Meta.Match.MatcherInfo
 
 deriving instance Repr for Lean.StructureParentInfo
+deriving instance Repr for
+  Lean.Compiler.LCNF.Arg,
+  Lean.Compiler.LCNF.LitValue,
+  Lean.Compiler.LCNF.LetValue,
+  Lean.Compiler.LCNF.LetDecl,
+  Lean.Compiler.LCNF.Param,
+  Lean.Compiler.LCNF.Code
 
 end OrphanInstances
 
