@@ -1,5 +1,7 @@
 import Lean
 
+namespace Hdlean
+
 section OrphanInstances
 
 @[instance low]

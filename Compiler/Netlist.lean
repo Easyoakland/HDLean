@@ -8,13 +8,12 @@ def List.strJoin [ToString α] [ToString β] (sep: α) (list:List β): String :=
 
 def String.replicate (n : Nat) (c : Char): String := String.mk <| List.replicate n c
 
-def tabwidth := 2
-
-namespace Data
+namespace Hdlean.Compiler.Netlist
 
 namespace SystemVerilog
-
 open Lean Lean.Name
+
+def tabwidth := 2
 
 section BaseTypes
 

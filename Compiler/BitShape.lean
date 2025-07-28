@@ -1,7 +1,7 @@
 import Lean
 import Lean.Meta
 import Hdlean.Basic
-import Compiler.Data
+import Compiler.Netlist
 
 open Lean Lean.Compiler Lean.Compiler.LCNF
 
@@ -35,7 +35,7 @@ def isCtor [Monad m] [MonadEnv m] (declName : Name) : m Bool :=
   return isCtorCore (← getEnv) declName
 end Lean
 
-namespace Hdlean.ToData
+namespace Hdlean
 
 inductive BitShape where
   | struct (fields: Array BitShape)
@@ -59,8 +59,6 @@ structure State where
   cache : Std.HashMap Expr (Option BitShape) := {}
 
 abbrev M := StateRefT State MetaM
-
--- #check LCNF.ToLCNF.run
 
 def M.run (x : M α) (state: State := {}) : MetaM α :=
   x |>.run' state

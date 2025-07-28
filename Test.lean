@@ -28,7 +28,7 @@ def Test.t3 := Either Bool B
 def Test.t4 := MyType 2
 def Test.t5 := Either Nat Bool
 
-open Test Lean Lean.Compiler.LCNF Hdlean.ToData.BitShape in
+open Test Lean Lean.Compiler.LCNF Hdlean.BitShape in
 def main : IO Unit := do
   let bitWidthAsserts: Lean.Meta.MetaM (List Bool) := do pure [
     (← bitShape! (.const ``t1 [])).totalWidth == 8,
@@ -43,8 +43,6 @@ def main : IO Unit := do
     (← bitShape? (.const ``Nat [])) == .none,
     (← bitShape? (.const ``t5 [])) == .none,
   ]
-
-
   initSearchPath (← findSysroot)
   let env ← importModules #[{module := `Test}] {} (trustLevel := 0)
   match ← (bitWidthAsserts.run' {} |>.run' default {env}).toIO' with

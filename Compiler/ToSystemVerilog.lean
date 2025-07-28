@@ -1,16 +1,17 @@
 import Lean
-import Lean.Meta
+import Std
+
 import Hdlean.Basic
 import Compiler
-import Std
 
 open Std (HashMap HashSet)
 open Lean hiding Module
 open Meta
-open Hdlean.ToData
-open Compiler
-open Data.SystemVerilog
-open BitShape hiding struct union
+
+open Hdlean.Meta
+open Hdlean.BitShape hiding struct union
+open Hdlean.Compiler
+open Netlist.SystemVerilog
 
 namespace Hdlean.Compiler
 
@@ -580,9 +581,6 @@ noncomputable def testSubsingletonElim := True.rec (motive:=fun _ => String) "st
 #reduce len_manual_mono
 #reduce show Bool from Acc.rec (motive:=fun x y => Bool) (fun x y z => x) (lcProof)
 
-#eval do return ToString.toString (← (withTransparency .all <| binderTelescope (.const ``mynot []) fun _args body =>  Meta.unfoldDefinition? (dbg! body)))
-#eval do (← (withTransparency .all <| binderTelescope (.const ``mynot []) fun _args body => do return Meta.unfoldDefinition? (dbg! (← Lean.Compiler.LCNF.inlineMatchers (dbg! body)))))
-#eval do (binderTelescope (.const ``mynot []) fun _args body => do return (dbg! ← delta? body))
 #eval do (Lean.Compiler.LCNF.inlineMatchers (.const ``mynot []))
 
 #eval do

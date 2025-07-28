@@ -2,6 +2,8 @@ import Hdlean.Arrow
 import Hdlean.Tactic
 import Lean
 
+namespace Hdlean
+
 /-- Mealy machine with inputs of `Mealy.I` and outputs of `O` with state `Mealy.σ` -/
 structure Mealy (O : Type u) where
   σ : Type u
@@ -37,12 +39,19 @@ protected def Mealy.repr' (self: Mealy α) [inst: Repr self.σ] [Repr α]: Nat �
   ] ("," ++ " ") ) " }"
 
 
+end Hdlean
 namespace NotSynthesizable
 open NotSynthesizable
+open Hdlean -- Have to open top level Hdlean namespace before the `namespace Hdlean` command for things to resolve properly.
+
+-- The following Mealy... functions are in `NotSynthesizable.Hdlean`, so that they can be called like methods after opening the `NotSynthesizable` namespace. Unfortunately, this doesn't work if their full names are `Hdlean.NotSynthesizable.Mealy.blah` and only if it is `NotSynthesizable.Hdlean.Mealy.blah`
+
+namespace Hdlean
 
 @[specialize m] def Mealy.next (m : Mealy α) (i: m.I) : Mealy α :=
   let p := m.transition i m.state
   ⟨m.σ, m.I, p.1, p.2, m.transition⟩
+#check Hdlean.Mealy.next
 
 /- /-- This has "failed to generate equational theorem" issues -/
 def Mealy.get (n:Nat) (s : Mealy α) (inputs: Vector s.I n) : Mealy α := let inputs' := inputs.toList; match h: n, h2: inputs' with
@@ -86,6 +95,8 @@ def Mealy.get (n:Nat) (s : Mealy α) (inputs: Vector s.I n) : Mealy α := let in
 
 @[simp] theorem Mealy.next_I (s : Mealy α) (i: s.I): (s.next i).I = s.I := rfl
 
+end Hdlean -- The rest of the `NotSynthesizable` functions here aren't meant to be used like methods. If they were defined above then every usage would have to `open NotSynthesizable.Hdlean` to use them in addition to `open NotSynthesizable`.
+
 @[specialize machine] def simulate (machine: Mealy O) (inputs: Array machine.I) : Array (Σ' (m : Mealy O), m.σ = machine.σ ∧ m.I = machine.I) :=
   have : machine.σ = (machine.σ) := rfl
   let p: (Mealy O) := machine
@@ -111,6 +122,7 @@ def Mealy.get (n:Nat) (s : Mealy α) (inputs: Vector s.I n) : Mealy α := let in
 
 
 end NotSynthesizable
+namespace Hdlean -- re-open the top-level Hdlean namespace now that we're done with NotSynthesizable.
 
 @[inline] def Mealy.pure (a : α) : Mealy α where
   σ := PUnit

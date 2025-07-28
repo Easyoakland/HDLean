@@ -1,7 +1,7 @@
 import Lean.Meta
 import Hdlean.Basic
 
-namespace HDLean.WHNF
+namespace Hdlean.Meta
 
 open Lean Meta
 
