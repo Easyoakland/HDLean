@@ -405,6 +405,8 @@ def emit (name : Name) : MetaM String := do
   let mod ← withTransparency .all <| constToSystemVerilog name |>.run'
   return ToString.toString mod.emit
 
+-- TODO delete.
+/- Below is effectively a REPL of random tests. -/
 section Testing
 def f: Bool:= .true
 #eval do println! ← emit (``f)
