@@ -515,7 +515,6 @@ end
 #eval do return Lean.getStructureInfo (← getEnv) ``DependentStructure |>.getProjFn? 1 |>.get!
 #check Hdlean.Compiler.DependentStructure.d
 
-def sorryP {p:Prop}: p := sorry
 def len_manual (x: Vector α n): Fin (n+1) := x.elimAsList fun l hl => match l with
   | .nil => ⟨0, by omega⟩
   | .cons a b =>
@@ -526,19 +525,65 @@ def len_manual (x: Vector α n): Fin (n+1) := x.elimAsList fun l hl => match l w
 #eval len_manual (α:=Nat) #v[1,2,3]
 def len_manual_mono : Fin 3 := len_manual #v[0,1]
 
+#check PSigma.mk
+#check (@PSigma.mk Nat (fun n => Vector Nat n) 2 #v[0,1]).1
+
 #check Acc.rec
-#eval do println! ← emit (``len_manual_mono)
-#eval show MetaM _ from do println! (← Lean.getConstInfoRec ``Bool.rec)
+#eval show Bool from @Acc.rec (r:=Eq) (motive:=fun x y => Bool) _ (fun x y z => x) .true (@lcProof (Acc _ _))
+#reduce fun (n:Nat) => (Nat.rec (motive := fun _ => List Nat) ([]) (fun x y => y.cons x) (n+2) : List Nat)
+#reduce True.rec (motive:=fun _ => String) "start" .intro
+noncomputable def testSubsingletonElim := True.rec (motive:=fun _ => String) "start" .intro
+#eval whnf (.const ``testSubsingletonElim [])
+#eval Meta.whnf (.const ``testSubsingletonElim [])
+-- TODO I think this is working weird because the major type is Prop. But maybe not because True.rec and Nat.rec etc reduces fine.
+-- TODO alternatively, it's because there's Eq.rec and reduce doesn't seem to handle that well.
+-- TODO ah! is Acc.rec similar to Eq.rec in that it blocks reduction?! When does a recursor block reduction? What would be the intended method of reducing one of these recursors which block reduction? I'm guessing I'm going to need some kind of intermediate between whnf which is blocked on .rec and #eval which fully evaluates an expression.
+#eval do println! ← emit (``len_manual_mono) -- TODO variants = [], yet it is trying to synthesize in hardware.
+#check Acc.rec
+#check Eq.rec
+#eval do println! ← withTransparency .all <| whnf (.const ``len_manual_mono [])
+#eval do println! ← (
+    Meta.transform
+    (← withTransparency .all <| reduce (explicitOnly:=false) (.const ``len_manual_mono []))
+    (pre:=fun e => do
+    let type ← inferType e
+    let typeType ← inferType type
+    if (← Meta.isPropFormerType type) then
+      dbg!' s!"replace, {e} with lcProof"
+      return TransformStep.done (Expr.const `lcErased [])
+    else if (← Meta.isPropFormerType (dbg! typeType)) then
+      dbg!' s!"replace, {e} with lcErased"
+      -- return TransformStep.done (.app (Expr.const `lcProof []) type)
+      return TransformStep.done (Expr.const `lcProof [])
+    else
+      return TransformStep.continue .none)
+  )
+#eval do
+  let a := ← (
+    Meta.transform
+    (← withTransparency .all <| reduce (explicitOnly:=false) (.const ``len_manual_mono []))
+    (pre:=fun e => do
+    let type ← inferType e
+    let typeType ← inferType type
+    if (← Meta.isPropFormerType type) then
+      dbg!' s!"replace, {e} with lcProof"
+      return TransformStep.done (Expr.const `lcErased [])
+    else if (← Meta.isPropFormerType (dbg! typeType)) then
+      dbg!' s!"replace, {e} with lcErased"
+      -- return TransformStep.done (.app (Expr.const `lcProof []) type)
+      return TransformStep.done (Expr.const `lcProof [])
+    else
+      return TransformStep.continue .none)
+  )
+  ToString.toString <$> (reduce a)
+#eval len_manual_mono
+#reduce len_manual_mono
+#reduce show Bool from Acc.rec (motive:=fun x y => Bool) (fun x y z => x) (lcProof)
 
 #eval do return ToString.toString (← (withTransparency .all <| binderTelescope (.const ``mynot []) fun _args body =>  Meta.unfoldDefinition? (dbg! body)))
 #eval do (← (withTransparency .all <| binderTelescope (.const ``mynot []) fun _args body => do return Meta.unfoldDefinition? (dbg! (← Lean.Compiler.LCNF.inlineMatchers (dbg! body)))))
 #eval do (binderTelescope (.const ``mynot []) fun _args body => do return (dbg! ← delta? body))
 #eval do (Lean.Compiler.LCNF.inlineMatchers (.const ``mynot []))
-
--- TODO
--- How does inlineMatchers work in LCNF, how is Cases made, and how does bindCases work?
--- #check Core.transform
--- #check Meta.traverseChildren
 
 #eval do
   let res ← Meta.unfoldDefinition? (.const ``mynot.match_1 [1]);
