@@ -2,7 +2,9 @@ import Lean
 import Std
 
 import Hdlean.Basic
-import Compiler
+import Compiler.BitShape
+import Compiler.Netlist
+import Compiler.WHNF
 
 open Std (HashMap HashSet)
 open Lean hiding Module
