@@ -57,7 +57,6 @@ def denylist: NameSet := (NameSet.empty
   -- |>.insert ``instDecidableLeBitVec
 )
 def whnf := @whnfWithDenylist' (inlineMatchers:=true) denylist
--- abbrev binderTelescope {α} e k (reducing:=true) (maxVars?:=Option.none) (cleanupAnnotations:=false) := @Meta.binderTelescope (α:=α) e k (reducing:=reducing) (denylist:=denylist) maxVars? cleanupAnnotations
 
 /-- A function is synthesizable if all arguments and the return type are synthesizable. This means that they either can be erased (`Sort _`) or have a known unboxed size. This also works for a function with 0 args (a type). -/
 def forallIsSynthesizable (type:Expr): MetaM Bool := forallTelescope type fun args body => do
@@ -112,10 +111,8 @@ def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctor
     | .struct fieldShapes =>
       assert! ctorVal.cidx = 0
       pure (0, fieldShapes)
-
   if fieldIdx >= fieldShapes.size then
     throwError "Projection index out of bounds: {fieldIdx} for {ctorVal.induct} with {fieldShapes.size} fields"
-
   let mut start := tagWidth
   for i in [0:fieldIdx] do
     start := start + fieldShapes[i]!.totalWidth
@@ -237,7 +234,6 @@ partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Arr
 /-- Returns a substituted `Expr` if implemented by something else for hardware synthesis -/
 partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
   pure <| match e with
-  -- | (.proj ``LT 0 (.app (.const ``instLTBitVec []) _)) => .some ``BitVec.lt
   | (.const ``instDecidableLtBitVec []) => .some ``instDecidableLtBitVecHW
   | _ => .none
 
@@ -246,7 +242,6 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   let e := (dbg! e).eta
   if let .some (.union #[]) := ← bitShape? (← inferType e) then
     return ValueExpr.literal "/*ZST*/"
-
   match dbg! e with
   | .fvar fvarId => do
     match (← read).env.get? fvarId with
@@ -256,9 +251,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     let (fn, args) := e.getAppFnArgs
     let fn := if let .some fn := dbg! ← HWImplementedBy? (dbg! e.getAppFn) then fn else fn
     if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}, whnf := {← whnf e}"
-    dbg!' fn
-
-    match fn with
+    match dbg! fn with
     | ``BitVec.ofFin =>
       let #[_w, toFin] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ofFin"
       let val ← compileValue toFin
@@ -289,10 +282,6 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .le x y
-    -- | ``instLTBitVec =>
-    --   compileValue (.const ``instLTBitVecHW [])
-    -- | ``instLEBitVec =>
-    --   compileValue (.const ``instLEBitVecHW [])
     | fn =>
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
@@ -346,15 +335,14 @@ partial def compileFun (fn: Expr): CompilerM Module := do
   let body := (← delta? body) |>.getD body
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
   if !(← forallIsSynthesizable (← inferType body)) then
-    let .some body' ← delta? body | throwError "Unsynthesizable body is not unfoldable: {body}, args={args}"
-    dbg!' body'
-    if body' == body then throwError "Unsynthesizable body could not be unfolded: {body}, args={args}"
+    let err := fun () => s!"Unsynthesizable body is not unfoldable: {body}, args={args}"
+    let .some body' ← delta? body | throwError err ()
+    if body' == body then throwError err ()
     return ← compileFun (← mkLambdaFVars args body')
-  let .some retShape ← bitShape? (← Meta.returnTypeV body args) | throwError dbg! "TODO"
-
+  let retShape ← bitShape! (← Meta.returnTypeV body args)
+  -- Convert function arguments to module ports.
   let mut parameters := #[]
   let mut ports := #[]
-
   for arg in args do
     let argType ← inferType arg
     let .some argShape ← bitShape? argType | throwError "Argument `{arg}:{argType}` is unsynthesizable"
@@ -363,52 +351,40 @@ partial def compileFun (fn: Expr): CompilerM Module := do
       type := { width := argShape.totalWidth },
       direction := .input
     }
-
   ports := ports.push {
     name := `o,
     type := { width := retShape.totalWidth },
     direction := .output
   }
-
+  -- Intantiate the function and assign the result of the function call to the output port.
   let ctx : CompileContext := {
     env := ← args.foldlM (init := (← read).env) fun map arg => do
       let name := ← arg.fvarId!.getUserName
       return map.insert arg.fvarId! (.identifier name)
   }
-
   withReader (fun _ => ctx) <| compileAssignment (.identifier `o) body
-
+  -- Save the module to the CompileM state of modules to emit and return it.
   let name ← mkFreshUserName `mod
-  let mod := {
-    name,
-    parameters := parameters,
-    ports := ports,
-    items := (←get).items
-  }
+  let mod := { name, parameters, ports, items := (←get).items }
   modify fun x => {x with items:=#[], modules:=x.modules.push mod}
   return mod
 
 def constToSystemVerilog (name : Name) : CompilerM Module := do
   if let .some mod := (← get).cache.find? name then return mod
-
   let info ← Lean.getConstInfo name
-  let e := info.value!
-
-  let mod ← compileFun e
+  let mod ← compileFun info.value!
   assert! mod == (← get).modules.back!
   let compiledMod := {mod with name}
-
   -- Fix the name of the module removing the old version, and cache the new module.
   modify fun x => {x with cache := x.cache.insert name compiledMod, modules := x.modules.pop.push compiledMod}
-
   return compiledMod
 
-def emit (name : Name) : MetaM String := do
+def emit (name : Name) : MetaM Std.Format := do
   let mod ← withTransparency .all <| constToSystemVerilog name |>.run'
-  return ToString.toString mod.emit
+  return mod.emit
 
--- TODO delete.
 /- Below is effectively a REPL of random tests. -/
+-- TODO delete.
 section Testing
 def f: Bool:= .true
 #eval do println! ← emit (``f)
