@@ -102,8 +102,9 @@ v.y
 ```
 -/
 def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctorVal : ConstructorVal) (fieldIdx:Nat) (fieldType:Expr) : CompilerM ValueExpr := do
+  let shape ← bitShape! constructedValType
+  if let .union #[] := shape then return ValueExpr.literal "/*ZST*/"
   let (tagWidth, fieldShapes) ← do
-    let shape ← bitShape! constructedValType
     match shape with
     | .union variants =>
       let .some variant := variants[ctorVal.cidx]? | throwError "ctorVal is invalid variant: {ctorVal} of {variants}"
@@ -167,6 +168,7 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   -- If the type depends on the major premise's values this will fail, otherwise whnf will simplify to the monomorphic type. The `+1` is for the major argument.
   let retType ← whnf <| mkAppN motive args[recursor.getFirstIndexIdx:recursor.getFirstIndexIdx+recursor.numIndices+1]
   dbg!' retType
+  if retType.isProp then return ValueExpr.literal "/*ZST: rec eliminates to Prop */"
   let minors := args[recursor.getFirstMinorIdx:recursor.getFirstIndexIdx].toArray
   if !(← forallIsSynthesizable retType) then throwError "Return type of motive not synthesizable: {retType}"
   let majorVal ← compileValue major
@@ -200,7 +202,10 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   let recRes ← mkFreshUserName (recursor.getMajorInduct ++ `recRes |>.str ((ToString.toString retType).takeWhile fun c => !c.isWhitespace))
   let retHWType ← getHWType retType
   addItem <| .var { name := recRes, type := retHWType }
-  addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorType) cases.toList (.some undefinedValue)]
+  match minors.size with
+  | 0 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) undefinedValue
+  | 1 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) cases[0]!.snd
+  | _ => addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorType) cases.toList (.some undefinedValue)]
   return .identifier recRes
 
 /-- Compile a constructor in the opposite way that a FieldProjection is compiled.  -/
@@ -239,7 +244,9 @@ partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
 partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   let e ← whnf (dbg! e)
   let e := (dbg! e).eta
-  -- dbg!' Repr.reprPrec e 0
+  if let .some (.union #[]) := ← bitShape? (← inferType e) then
+    return ValueExpr.literal "/*ZST*/"
+
   match dbg! e with
   | .fvar fvarId => do
     match (← read).env.get? fvarId with
@@ -250,9 +257,6 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     let fn := if let .some fn := dbg! ← HWImplementedBy? (dbg! e.getAppFn) then fn else fn
     if fn.isAnonymous then throwError "non-constant application {e}"
     dbg!' fn
-    let info ← Lean.getConstInfo fn
-
-    if ← isTypeFormerType (← Meta.returnTypeT info.type args) then return ValueExpr.literal "/*ZST*/"
 
     match fn with
     | ``BitVec.ofFin =>
@@ -336,17 +340,15 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
   ```
 -/
 partial def compileFun (fn: Expr): CompilerM Module := do
-  dbg!' fn
-  lambdaTelescope (dbg! ← etaExpand fn) fun args body => do
+  lambdaTelescope (← etaExpand fn) fun args body => do
   -- If doesn't unfold is probably an irreducible constant which should be handled correctly by `compileAssignment`
   let body := (← delta? body) |>.getD body
-  dbg!' (args, body, ← delta? body)
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
   if !(← forallIsSynthesizable (← inferType body)) then
     let .some body' ← delta? body | throwError "Unsynthesizable body is not unfoldable: {body}, args={args}"
     dbg!' body'
     if body' == body then throwError "Unsynthesizable body could not be unfolded: {body}, args={args}"
-    return ← compileFun (dbg! ← mkLambdaFVars args body')
+    return ← compileFun (← mkLambdaFVars args body')
   let .some retShape ← bitShape? (← Meta.returnTypeV body args) | throwError dbg! "TODO"
 
   let mut parameters := #[]
@@ -354,7 +356,7 @@ partial def compileFun (fn: Expr): CompilerM Module := do
 
   for arg in args do
     let argType ← inferType arg
-    let .some argShape ← bitShape? (dbg! argType) | throwError "Argument `{arg}:{argType}` is unsynthesizable"
+    let .some argShape ← bitShape? argType | throwError "Argument `{arg}:{argType}` is unsynthesizable"
     ports := ports.push {
       name := ← arg.fvarId!.getUserName,
       type := { width := argShape.totalWidth },
