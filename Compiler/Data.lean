@@ -18,23 +18,11 @@ open Lean Lean.Name
 
 section BaseTypes
 
-/-- Bit literal -/
-inductive Bit
-  /-- High -/
-  | H
-  /-- Low -/
-  | L
-  /-- Undefined -/
-  | U
-  /-- High-impedance -/
-  | Z
-  deriving Repr, BEq
-
 inductive Direction where
   | input
   | output
   | inout
-deriving Repr, BEq, Hashable
+deriving Repr, BEq, Hashable, Inhabited
 
 def Direction.emit: Direction → String
   | input => "input"
@@ -61,9 +49,39 @@ def AssignmentType.emit: AssignmentType → String
   | nonblocking => "<="
 
 abbrev Identifier := Name
--- Could use escaped identifiers (start with `\` end with ` `) to avoid keyword issues and so on.
--- "\\" ++ ... ++ " "
-def Identifier.emit (ident:Identifier): String := ident.toStringWithSep "_" false
+
+inductive SubstChar where
+| keep
+| replace (c:Char)
+| remove
+
+def _root_.String.substChar (s:String) (p: Char → SubstChar): String := Id.run do
+  let mut acc := ""
+  for c in s.data do match p c with
+    | .keep => acc := acc.push c
+    | .replace c => acc := acc.push c
+    | .remove => ()
+  acc
+
+/-- `escape := true` to escape identifiers (start with `\` end with whitespace) to avoid keyword issues and invalid ascii characters and so on. -/
+/- 5.6:
+"The first character of a simple identifier shall not be a digit or $; it can be a letter or an underscore.
+Identifiers shall be case sensitive."
+"Escaped identifiers shall start with the backslash character (\) and end with white space (space, tab,
+newline). They provide a means of including any of the printable ASCII characters in an identifier (the
+decimal values 33 through 126, or 21 through 7E in hexadecimal)." -/
+def Identifier.emit (ident:Identifier) (escape:=false): String :=
+  let s := esc ++ ident.toStringWithSep "_" false |>.substChar f
+  s.set 0 (start (s.get 0))
+where
+  esc := if escape then "\\" else ""
+  start (c:Char): Char := if escape then c else
+    if c.isDigit || c == '$' then '_' else c
+  f (c:Char): SubstChar := if escape
+  then
+    if c.toNat ∈ [33:127] then .keep else .remove
+  else
+    if c.isAlphanum || c == '_' || c == '$' then .keep else .remove
 
 abbrev Size := Nat
 
@@ -176,7 +194,7 @@ inductive SpaceExpr : Type where
 def SpaceExpr.emit: SpaceExpr → Option String
   | identifier id => id.emit
   | bitSelect id bs => do s!"{← id.emit}{← bs.emit}"
-  | concatenation spaces => do return "{" ++ ((←spaces.mapM (·.emit)).intersperseTR "," |>.foldl (init:="") String.append) ++ "}"
+  | concatenation spaces => do return "{" ++ ((←spaces.mapM (·.emit)).intersperseTR ", " |>.foldl (init:="") String.append) ++ "}"
 
 -- #eval SpaceExpr.concatenation [SpaceExpr.identifier `a, .identifier `b |> (SpaceExpr.bitSelect . [1:3])] |>.emit |>.get!
 
@@ -187,8 +205,11 @@ inductive ValueExpr where
   | binaryOp (op : BinOp) (left : ValueExpr) (right : ValueExpr)
   | unaryOp (op : UnOp) (operand : ValueExpr)
   | bitSelect (base : ValueExpr) (index : BitSlice)
+  /-- Stored from most to least significant order. -/
   | concatenation (parts : List ValueExpr)
-  deriving Repr, BEq, Hashable
+  deriving Repr, BEq, Hashable, Inhabited
+
+def undefinedValue: ValueExpr := .literal "'x"
 
 def ValueExpr.emit: ValueExpr → Option String
   | identifier name => name.emit
@@ -196,7 +217,7 @@ def ValueExpr.emit: ValueExpr → Option String
   | binaryOp op l r => do s!"({← l.emit} {op.emit} {← r.emit})"
   | unaryOp op x => do s!"({op.emit}{← x.emit})"
   | bitSelect b i => do s!"{← b.emit}{← i.emit}"
-  | concatenation xs => do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR "," |>.foldl String.append "") ++ "}"
+  | concatenation xs => do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR ", " |>.foldl String.append "") ++ "}"
 
 -- #eval println! ValueExpr.binaryOp .add (ValueExpr.concatenation [ValueExpr.identifier `a, .identifier `b, .literal "'b101"]) (ValueExpr.unaryOp (.not) (ValueExpr.identifier `c)) |>.emit
 
@@ -208,11 +229,12 @@ structure Port where
   name : Identifier
   type : HWType
   direction : Direction
-  deriving Repr, BEq, Hashable
+  deriving Repr, BEq, Hashable, Inhabited
 
 structure Parameter where
   name : Identifier
-  type : HWType
+  /-- Parameters can have types optionally because of size inference. -/
+  type : Option HWType
   deriving Repr, BEq, Hashable
 
 /-- Declaration of a variable (i.e. a signal) -/
@@ -226,7 +248,7 @@ def VarDeclaration.emit (var:VarDeclaration): Option String := do
   let init ← match var.init with
     | .some x => pure s!" = {← x.emit}"
     | .none => pure ""
-  s!"{← var.type.emit} {var.name}{init};"
+  s!"{← var.type.emit} {var.name.emit}{init};"
 
 -- #eval VarDeclaration.mk (`name1) ({variant:=.logic_var, signed:=false, width:=3}) .none |>.emit
 -- #eval VarDeclaration.mk (`name1) ({variant:=.logic_var, signed:=false, width:=3}) (.some <| ValueExpr.identifier `init) |>.emit
@@ -301,12 +323,12 @@ inductive ModuleItem
       (module_name:Identifier)
       (inst_name:Identifier)
       (ports:PortMap)
-      (parameters:ParamMap)
+      (parameters:ParamMap:={})
   deriving Repr, BEq, Hashable
 
 open Std.Format in
 def ModuleItem.emit: ModuleItem → Std.Format
-  | .var val => val.emit.getD s!"/* ZST variable declaration {val.name.emit} */"
+  | .var val => val.emit.getD s!"/* ZST variable declaration: {val.name.emit} */"
   | .assignment assign space value => (do s!"{← space.emit} {assign.emit} {← value.emit}").getD "/* ZST assign */"
   | .initial stmts => let stmts := stmts.map (·.emit)
     let stmts := stmts.filterMap id -- remove unrendered ZST statements
