@@ -92,14 +92,14 @@ def BitSlice.emit (self:BitSlice): Option String :=
   else .some s!"[{self.stop}-1:{self.start}]"
 
 inductive HWVariant where
-  | logic_var
+  | logicVar
   | wire
   | reg
   | user (val:Identifier)
   deriving Repr, BEq, Hashable, Inhabited
 
 def HWVariant.emit: HWVariant → String
-  | logic_var => "logic var"
+  | logicVar => "logic var"
   | wire => "wire"
   | reg => "reg"
   | user s => s.emit
@@ -162,7 +162,7 @@ inductive UnOp where
   | not
   /-- Flip all bits -/
   | invert
-  /-- Unary reduction operators -/
+  /- Unary reduction operators -/
   | and
   | or
   | xor
@@ -249,8 +249,8 @@ def VarDeclaration.emit (var:VarDeclaration): Option String := do
     | .none => pure ""
   s!"{← var.type.emit} {var.name.emit}{init};"
 
--- #eval VarDeclaration.mk (`name1) ({variant:=.logic_var, signed:=false, width:=3}) .none |>.emit
--- #eval VarDeclaration.mk (`name1) ({variant:=.logic_var, signed:=false, width:=3}) (.some <| ValueExpr.identifier `init) |>.emit
+-- #eval VarDeclaration.mk (`name1) ({variant:=.logicVar, signed:=false, width:=3}) .none |>.emit
+-- #eval VarDeclaration.mk (`name1) ({variant:=.logicVar, signed:=false, width:=3}) (.some <| ValueExpr.identifier `init) |>.emit
 
 /-- Values to instantiate the signals of a `Module` with  -/
 abbrev PortMap := List (Port× ValueExpr)
@@ -277,7 +277,6 @@ inductive Stmt
     (default: Option ValueExpr)
   deriving Repr, BEq, Hashable
 
--- TODO write to FormatM monad instead to track indent and such. Some way to auto return on zst.
 open Std.Format in
 def Stmt.emit : Stmt → Option Std.Format
   | assignment assign space val => do s!"{← space.emit} {assign.emit} {← val.emit};"
@@ -380,10 +379,10 @@ def ModuleItem.emit: ModuleItem → Std.Format
 -- #eval println! ModuleItem.emit <| ModuleItem.alwaysComb (List.replicate 3 (Stmt.assignment .blocking (SpaceExpr.identifier `a) (.identifier `b)))
 -- #eval println! ModuleItem.emit <| ModuleItem.alwaysClocked .posedge `a [Stmt.assignment .blocking (SpaceExpr.identifier `a) (.identifier `b)]
 -- #eval println! ModuleItem.emit <| ModuleItem.alwaysClocked .negedge `b (List.replicate 3 (Stmt.assignment .nonblocking (SpaceExpr.identifier `a) (.identifier `b)))
--- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname [(Port.mk `portname {variant:=.logic_var,signed:=false,width:=2} .output, .identifier `val)] []
--- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname (List.replicate 3 ((Port.mk `portname {variant:=.logic_var,signed:=false,width:=2} .output, .identifier `val))) []
--- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname (List.replicate 8 ((Port.mk `portname {variant:=.logic_var,signed:=false,width:=2} .output, .identifier `val))) []
--- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname (List.replicate 8 ((Port.mk `portname {variant:=.logic_var,signed:=false,width:=2} .output, .identifier `val))) [({name:=`a,type:={variant:=.logic_var,signed:=false,width:=4}},.some <| ValueExpr.identifier `value)]
+-- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname [(Port.mk `portname {variant:=.logicVar,signed:=false,width:=2} .output, .identifier `val)] []
+-- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname (List.replicate 3 ((Port.mk `portname {variant:=.logicVar,signed:=false,width:=2} .output, .identifier `val))) []
+-- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname (List.replicate 8 ((Port.mk `portname {variant:=.logicVar,signed:=false,width:=2} .output, .identifier `val))) []
+-- #eval println! ModuleItem.emit <| ModuleItem.inst `modname `u1_modname (List.replicate 8 ((Port.mk `portname {variant:=.logicVar,signed:=false,width:=2} .output, .identifier `val))) [({name:=`a,type:={variant:=.logicVar,signed:=false,width:=4}},.some <| ValueExpr.identifier `value)]
 
 /-- Module: base unit of a Netlist -/
 structure Module where
@@ -423,15 +422,15 @@ def Module.emit (self:Module): Std.Format :=
 -- #eval println! (default:Module).emit
 -- #eval println! {
 --   name:=`module_name,parameters:=#[(Parameter.mk `a {
---       variant:=HWVariant.logic_var,
+--       variant:=HWVariant.logicVar,
 --       signed:=false,
 --       width:=3
 --     }, Option.none), (Parameter.mk `b {
---       variant:=HWVariant.logic_var,
+--       variant:=HWVariant.logicVar,
 --       signed:=false,
 --       width:=3
 --     }, .some <| ValueExpr.identifier `bval)],
---   ports:=#[Port.mk `b {variant:=HWVariant.logic_var, signed:=true, width:=3} .output],
+--   ports:=#[Port.mk `b {variant:=HWVariant.logicVar, signed:=true, width:=3} .output],
 --   items:=#[
 --     ModuleItem.var {name := `item1, type := {variant:=HWVariant.wire,width:=4}},
 --     ModuleItem.var {name := `item2, type := {signed:=true,width:=0}},
