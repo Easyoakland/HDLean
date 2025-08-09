@@ -384,18 +384,19 @@ body = {body}"
   modify fun x => {x with items:=#[], modules:=x.modules.push mod}
   return mod
 
-def constToSystemVerilog (name : Name) : CompilerM Module := do
+def compileDecl (name : Name) : CompilerM Module := do
   if let .some mod := (← get).cache.find? name then return mod
-  let info ← Lean.getConstInfo name
-  let mod ← compileFun info.value!
+  let mod ← compileFun (.const name [])
   assert! mod == (← get).modules.back!
   let compiledMod := {mod with name}
   -- Fix the name of the module removing the old version, and cache the new module.
+  -- TODO: the name of the current stack should be in `CompilerM` to make error messages nicer and so that modules are named correctly on creation instead of needing this fixup step.
   modify fun x => {x with cache := x.cache.insert name compiledMod, modules := x.modules.pop.push compiledMod}
   return compiledMod
 
+/-- Emit `Std.Format` of the final SystemVerilog code for the given constant. -/
 def emit (name : Name) : MetaM Std.Format := do
-  let mod ← withTransparency .all <| constToSystemVerilog name |>.run'
+  let mod ← withTransparency .all <| compileDecl name |>.run'
   return mod.emit
 
 /- Below is effectively a REPL of random tests. -/
