@@ -5,6 +5,7 @@ import Hdlean.Basic
 import Compiler.BitShape
 import Compiler.Netlist
 import Compiler.WHNF
+import Compiler.Trace
 
 open Std (HashMap HashSet)
 open Lean hiding Module
@@ -153,34 +154,39 @@ partial def compileExprProj (typeName:Name) (idx:Nat) (struct:Expr) : CompilerM 
 - `args` should (given correct usage of recursor) be `#[params, motives, minors, indices, major, other...]`.
  -/
 partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : CompilerM ValueExpr := do
-  dbg!' args
+  trace[hdlean.compiler.compileRecursor] "compiling recursor {recursor.name}
+params = {args[:recursor.numParams]}
+motive = {args[recursor.numParams:recursor.numParams+recursor.numMotives]}
+minors = {args[recursor.getFirstMinorIdx:recursor.getFirstIndexIdx]}
+indices = {args[recursor.getFirstIndexIdx:recursor.getMajorIdx]}
+major = {args[recursor.getMajorIdx]!}
+extra args = {args[recursor.getMajorIdx+1:]}"
   if recursor.numMotives != 1 then throwError "Number of motives != 1 for {recursor.name}"
   if args.size < recursor.getMajorIdx+1 then throwError "Recursor {recursor.name} underapplied"
   if args.size > recursor.getMajorIdx+1 then throwError s!"TODO: extra args: {args[recursor.getMajorIdx+1:]}"
-  let otherArgs := args[recursor.getMajorIdx+1:].toArray
-  dbg!' otherArgs
   let motive ← reduce args[recursor.numParams]!
   let major := args[recursor.getMajorIdx]!
   -- Return type is found by applying indices and major premise to motive.
   -- If the type depends on the major premise's values this will fail, otherwise whnf will simplify to the monomorphic type. The `+1` is for the major argument.
   let retType ← whnfEvalEta <| mkAppN motive args[recursor.getFirstIndexIdx:recursor.getFirstIndexIdx+recursor.numIndices+1]
-  dbg!' retType
+  trace[hdlean.compiler.compileRecursor] "retType = {retType}"
   if retType.isProp then return ValueExpr.literal "/*ZST: rec eliminates to Prop */"
   let minors := args[recursor.getFirstMinorIdx:recursor.getFirstIndexIdx].toArray
   if !(← forallIsSynthesizable retType) then throwError "Return type of motive not synthesizable: {retType}"
+  trace[hdlean.compiler.compileRecursor] "compiling major val"
   let majorVal ← compileValue major
   let majorType ← inferType major
   let majorInductVal ← Lean.getConstInfoInduct recursor.getMajorInduct
-  dbg!' majorType
   let some majorShape ← bitShape? majorType | throwError "Major type not synthesizable: {majorType}"
   let majorTag ← mkFreshUserName (recursor.getMajorInduct ++ `tag)
   addItem <| .var { name := majorTag, type := ← tagHWType majorShape }
   addItem <| .assignment .blocking (.identifier majorTag) (.bitSelect majorVal [0:majorShape.tagBits])
-  dbg!' "before cases"
+  trace[hdlean.compiler.compileRecursor] "compiling {minors.size} ctor cases"
   let cases ← minors.mapIdxM fun idx minor => do
+    trace[hdlean.compiler.compileRecursor] "compiling minor for ctor {idx}"
     let ctorVal ← Lean.getConstInfoCtor majorInductVal.ctors[idx]!
     let tagVal ← compileValue <| mkAppN (.const ``Fin.mk []) #[
-      .lit <| .natVal (dbg! minors.size),
+      .lit <| .natVal (minors.size),
       .lit <| .natVal idx,
       .const ``lcProof []
     ]
@@ -190,12 +196,13 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
     let fieldVals ← (Array.range ctorVal.numFields).mapM fun fieldIdx => compileFieldProj majorVal majorType ctorVal fieldIdx fieldTypes[fieldIdx]!
     let binderNames ← (Array.range ctorVal.numFields).mapM fun fieldIdx => mkFreshUserName (.num (ctorVal.name ++ `field) fieldIdx)
     -- Apply minor premise to extracted fields.
+    -- TODO apply inductive hypothesis or check it exists and fail.
     let result ← withLocalDeclsDND (binderNames.zip fieldTypes) fun fieldFVarIds => do
       let mapping := fieldFVarIds.mapIdx (fun i fvarId => (fvarId.fvarId!, fieldVals[i]!))
       withReader (fun ctx => {ctx with env := ctx.env.insertMany mapping})
         <| compileValue (mkAppN minor fieldFVarIds)
-    return dbg! (tagVal, result)
-  dbg!' "after cases"
+    return (tagVal, result)
+  trace[hdlean.compiler.compileRecursor] "compiled {minors.size} ctor cases"
   let recRes ← mkFreshUserName (recursor.getMajorInduct ++ `recRes |>.str ((ToString.toString retType).takeWhile fun c => !c.isWhitespace))
   let retHWType ← getHWType (← bitShape! retType)
   addItem <| .var { name := recRes, type := retHWType }
@@ -207,10 +214,12 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
 
 /-- Compile a constructor in the opposite way that a FieldProjection is compiled.  -/
 partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Array Expr) : CompilerM ValueExpr := do
+  trace[hdlean.compiler.compileCtor] "compiling ctor: {ctor.name}"
   let params := args.extract 0 ctor.numParams
   let fields := args.extract ctor.numParams (ctor.numParams+ctor.numFields)
-  dbg!' (params, fields)
-  let inductType := dbg! mkAppN (.const ctor.induct levels) params
+  trace[hdlean.compiler.compileCtor] "params = {params}"
+  trace[hdlean.compiler.compileCtor] "fields = {fields}"
+  let inductType := mkAppN (.const ctor.induct levels) params
   let shape ← bitShape! inductType
   let tagWidth := shape.tagBits
   let fieldShapes ← match shape with
@@ -220,14 +229,17 @@ partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Arr
       pure fieldShapes
     | .struct fieldShapes => pure fieldShapes
   if fieldShapes.size != fields.size then throwError "HDLean Internal Error: field count mismatch for {ctor.name} (expected {fieldShapes.size}, got {fields.size})"
-  let fieldVals ← fields.mapM (fun field => compileValue (dbg! field))
+  let fieldVals ← fields.mapM (fun field => do
+    trace[hdlean.compiler.compileCtor] "compiling field value"
+    compileValue field
+  )
+  trace[hdlean.compiler.compileCtor] "compiling tag value"
   let tagVal ← if tagWidth == 0 then pure #[] else
     let tagVal ← compileValue <| mkAppN (.const ``BitVec.ofNat []) #[
       .lit <| .natVal tagWidth,
       .lit <| .natVal ctor.cidx,
     ]
     pure #[tagVal]
-  dbg!' (fieldVals, tagVal)
   return .concatenation <| Array.toList <| fieldVals ++ tagVal
 
 
@@ -238,19 +250,22 @@ partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
   | _ => .none
 
 partial def compileValue (e : Expr) : CompilerM ValueExpr := do
+  trace[hdlean.compiler.compileValue] "compiling value: {e}"
   let e ← whnfEvalEta e
+  trace[hdlean.compiler.compileValue] "whnfEvalEta: {e}"
   if let .some (.union #[]) := ← bitShape? (← inferType e) then
+    trace[hdlean.compiler.compileValue] "value is a zst"
     return ValueExpr.literal "/*ZST*/"
-  match dbg! e with
+  match e with
   | .fvar fvarId => do
     match (← read).env.get? fvarId with
     | .some value => pure value
     | .none => throwError "Unknown free variable: {fvarId}"
   | .app .. =>
     let (fn, args) := e.getAppFnArgs
-    let fn := if let .some fn := dbg! ← HWImplementedBy? (dbg! e.getAppFn) then fn else fn
+    let fn := if let .some fn := ← HWImplementedBy? e.getAppFn then fn else fn
     if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}"
-    match dbg! fn with
+    match fn with
     | ``BitVec.ofFin =>
       let #[_w, toFin] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ofFin"
       let val ← compileValue toFin
@@ -284,7 +299,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     | fn =>
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
-      | .ctorInfo val => compileCtor (dbg! val) e.getAppFn.constLevels! (dbg! args)
+      | .ctorInfo val => compileCtor val e.getAppFn.constLevels! args
       | _ => throwError "Unsupported function application: {e}"
   | .const name _ =>
     if let .ctorInfo val ← Lean.getConstInfo name then
@@ -330,8 +345,9 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
 -/
 partial def compileFun (fn: Expr): CompilerM Module := do
   lambdaTelescope (← etaExpand fn) fun args body => do
-  -- If doesn't unfold is probably an irreducible constant which should be handled correctly by `compileAssignment`
-  let body := (← delta? body) |>.getD body
+  trace[hdlean.compiler.compileFun] "compiling {fn}
+args = {args}
+body = {body}"
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
   if !(← forallIsSynthesizable (← inferType body)) then
     let err := fun () => s!"Unsynthesizable body is not unfoldable: {body}, args={args}"

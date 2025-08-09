@@ -63,6 +63,12 @@ deriving instance Repr for
   Lean.Compiler.LCNF.LetDecl,
   Lean.Compiler.LCNF.Param,
   Lean.Compiler.LCNF.Code
+deriving instance Repr for
+  Lean.Meta.ReduceMatcherResult
+deriving instance Repr for
+  Lean.Compiler.InlineAttributeKind,
+  Lean.Compiler.LCNF.DeclValue,
+  Lean.Compiler.LCNF.Decl
 
 end OrphanInstances
 
