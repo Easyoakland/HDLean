@@ -400,17 +400,19 @@ def emit (name : Name) : MetaM Std.Format := do
   return mod.emit
 
 /- Below is effectively a REPL of random tests. -/
+-- TODO use an actual unit testing framework
 -- TODO delete.
 section Testing
 def f: Bool:= .true
 #eval do println! ← emit (``f)
-
+#check Nat.add._sunfold
+#print Nat.add._sunfold
+#print Nat.add
 def g: BitVec 3 := 68#3
 #eval do println! ← emit (``g)
 def add_mul (x y z: BitVec w) := x + y * z
 def add_mul_mono := add_mul (w:=4)
 #eval do println! ← emit (``add_mul_mono)
-#eval do println! ← constToSystemVerilog (``add_mul_mono) |>.run'
 def add (x y: BitVec w) := x + y
 def add_mono := add (w:=4)
 #eval do println! ← emit (``add_mono)
@@ -422,10 +424,6 @@ def tmp : (BitVec 4) → (BitVec 4) → (BitVec 4) := (inferInstanceAs (Add (Bit
 
 #eval do println! ← emit (``add_mul_mono')
 
-#eval show MetaM _ from do
- let expr := (← delta? (.const ``add_mul_mono [])).get!
- println! ToString.toString <| (← compileFun expr |>.run').emit
-
 def mynot (x: Bool): Bool := match x with
   | false => true
   | true => false
@@ -433,19 +431,18 @@ def mynotL (x: LBool): LBool := match x with
   | .true => .false
   | .false => .true
   | .undef => .undef
-private inductive Either (α β) where | left (a:α) | right (b:β)
-def mynotE (x: Either Bool Bool): Bool := match x with
-  | .left v => mynot v
-  | .right v => mynot v
-def mynotE' (x: Either LBool LBool): LBool := match x with
-  | .left v => mynotL v
-  | .right v => mynotL v
-def mynotE'' (x: Either Bool LBool): Either LBool Bool := match x with
-  | .left v => .right <| mynot v
-  | .right v => .left <| mynotL v
-def mynotEIf (x: Either LBool LBool): Fin 3 :=
-  if let .left _ := x then 0
-  else if let .right _ := x then 1
+def mynotE (x: PSum Bool Bool): Bool := match x with
+  | .inl v => mynot v
+  | .inr v => mynot v
+def mynotE' (x: Sum LBool LBool): LBool := match x with
+  | .inl v => mynotL v
+  | .inr v => mynotL v
+def mynotE'' (x: Sum Bool LBool): Sum LBool Bool := match x with
+  | .inl v => .inr <| mynot v
+  | .inr v => .inl <| mynotL v
+def mynotEIf (x: PSum LBool LBool): Fin 3 :=
+  if let .inl _ := x then 0
+  else if let .inr _ := x then 1
   else 2
 def mynotEIf' (x: Bool): Fin 2 :=
   if h:x then 0
@@ -469,24 +466,18 @@ structure MyS where
   a: Fin 2
   b: Fin 3
   c: BitVec 4
-#eval Lean.getProjectionFnInfo? ``MyS.a
-#eval do return Lean.getProjFnInfoForField? (← getEnv) ``MyS `a
-#eval do return Lean.getProjFnForField? (← getEnv) ``MyS `a
-#eval do return Lean.getStructureFields (← getEnv) ``MyS
-#eval do return Lean.getFieldInfo? (← getEnv) ``MyS `a
-#eval do return Lean.getStructureInfo (← getEnv) ``MyS |>.getProjFn? 0
-#check Hdlean.Compiler.MyS.a
 def MyS.test1 : MyS:= {a:=1,b:=2,c:=3:MyS}
 def MyS.test2 : Fin 2:= {a:=1,b:=2,c:=3:MyS}.a
 def MyS.test3 (a: Fin 2): Fin 2:= {a,b:=2,c:=3:MyS}.a
 def MyS.test4 (s: MyS): Fin 2:= s.a
 def MyS.test5 (s: MyS): Fin 3:= s.b
+def MyS.test6 (s: MyS) := s.c
 #eval do println! ← emit (``MyS.test1)
-#eval do return ToString.toString <| ← whnf <| .app (.const ``MyS.a []) (.const ``MyS.test1 [])
 #eval do println! ← emit (``MyS.test2)
 #eval do println! ← emit (``MyS.test3)
 #eval do println! ← emit (``MyS.test4)
 #eval do println! ← emit (``MyS.test5)
+#eval do println! ← emit (``MyS.test6)
 structure DependentStructure where
   n : Nat
   d : Vector Bool n
@@ -517,22 +508,111 @@ def len_manual (x: Vector α n): Fin (n+1) := x.elimAsList fun l hl => match l w
       have : n > 0 := by exact?
       omega
     1 + (len_manual (n:=n-1) (.mk b.toArray (by exact?)) |>.castSucc |> cast (by rw [this]))
-#eval len_manual (α:=Nat) #v[1,2,3]
 def len_manual_mono : Fin 3 := len_manual #v[0,1]
+#eval len_manual #v[1,2,3]
+#reduce len_manual._unsafe_rec #v[1,2,3]
+
 
 #check PSigma.mk
 #check (@PSigma.mk Nat (fun n => Vector Nat n) 2 #v[0,1]).1
 
+inductive MyTypeWithIndices: Bool → Type where
+  | mk1 : MyTypeWithIndices .true
+  | mk2 : MyTypeWithIndices .false
+#check MyTypeWithIndices.rec
+
+set_option pp.proofs true in
 #check Acc.rec
-#eval show Bool from @Acc.rec (r:=Eq) (motive:=fun x y => Bool) _ (fun x y z => x) .true (@lcProof (Acc _ _))
+#check PSum.rec
+-- #eval show Bool from @Acc.rec (r:=Eq) (motive:=fun x y => Bool) _ (fun x y z => x) .true (@lcProof (Acc _ _))
 #reduce fun (n:Nat) => (Nat.rec (motive := fun _ => List Nat) ([]) (fun x y => y.cons x) (n+2) : List Nat)
 #reduce True.rec (motive:=fun _ => String) "start" .intro
 noncomputable def testSubsingletonElim := True.rec (motive:=fun _ => String) "start" .intro
 #eval whnfEvalEta (.const ``testSubsingletonElim [])
--- TODO I think this is working weird because the major type is Prop. But maybe not because True.rec and Nat.rec etc reduces fine.
--- TODO alternatively, it's because there's Eq.rec and reduce doesn't seem to handle that well.
--- TODO ah! is Acc.rec similar to Eq.rec in that it blocks reduction?! When does a recursor block reduction? What would be the intended method of reducing one of these recursors which block reduction? I'm guessing I'm going to need some kind of intermediate between whnf which is blocked on .rec and #eval which fully evaluates an expression.
-#eval do println! ← emit (``len_manual_mono) -- TODO variants = [], yet it is trying to synthesize in hardware.
+#eval Lean.Meta.whnf (.const ``testSubsingletonElim [])
+#check WellFounded.rec
+set_option trace.hdlean.compiler true
+#eval do println! ← emit (``len_manual_mono)
+partial def len_manual' (x: Vector α n): Fin (n+1) := x.elimAsList fun l hl => match l with
+  | .nil => ⟨0, by omega⟩
+  | .cons a b =>
+    have : n - 1 + 1 + 1 = n + 1 := by
+      have : n > 0 := by exact?
+      omega
+    1 + (len_manual' (n:=n-1) (.mk b.toArray (by exact?)) |>.castSucc |> cast (by rw [this]))
+unsafe def len_manual_mono' : Fin 3 := len_manual' #v[0,1]
+set_option trace.hdlean.compiler.compileRecursor true
+set_option trace.hdlean.compiler.compileValue true
+set_option trace.Meta.whnf true in
+#eval do println! ← emit (``len_manual_mono')
+#eval withTransparency .all <| Meta.unfoldDefinitionEval? (ignoreTransparency := true) (.const ``len_manual' [])
+#eval delta? (.const ``len_manual' [])
+#eval do return ← Lean.getConstInfo ``len_manual_mono'
+set_option trace.debug true in
+#eval do return Compiler.implementedByAttr.getParam? (← getEnv) ``len_manual'
+#check len_manual'._unsafe_rec
+#print len_manual'._unsafe_rec
+#print len_manual._unsafe_rec
+def a.imp: Fin 8 := 4
+@[implemented_by a.imp]
+opaque a: Fin 8 := 3
+#eval Lean.Compiler.LCNF.toDecl (``a) |>.run
+#eval do println! ← emit (``a)
+#eval do println! ←whnfEvalEta (.const ``a [])
+def b.imp : BitVec 8 → BitVec 8 := fun n => n + 2
+set_option trace.hdlean.compiler true in
+@[implemented_by b.imp]
+opaque b (n:BitVec 8): BitVec 8
+#eval do println! ← emit (``b)
+
+#eval do withTransparency .all <| monadLift (n:=MetaM) <| delta? (.const ``a [])
+#eval do return ← Lean.getConstInfo ``a
+set_option trace.debug true in
+#eval do trace[debug] (← Lean.getConstInfo ``len_manual').value! true
+#eval do return Compiler.implementedByAttr.getParam? (← getEnv) ``len_manual'
+#print a
+#eval do println! ← emit ``a
+#eval a
+#print len_manual'
+#print len_manual._unary
+#eval Lean.Compiler.LCNF.toDecl (``len_manual) |>.run
+#check Lean.Compiler.LCNF.LetValue.fvar
+#eval len_manual_mono'
+
+def wf_fake._size: Bool → Nat
+  | .false => 0
+  | .true => 1
+def wf_fake (b _b2:Bool): Unit := if b then wf_fake false false else ()
+  termination_by wf_fake._size b
+  decreasing_by
+    rename_i h
+    simp [wf_fake._size, h]
+#print wf_fake
+#print wf_fake._unary
+#eval do println! ← withTransparency .all <| Lean.Meta.whnf (Expr.const ``wf_fake [])
+#eval do println! ← withTransparency .all <| whnfEvalEta (Expr.const ``wf_fake [])
+set_option trace.debug true in
+#eval do trace[debug] Expr.eta <| ← withTransparency .all <| Lean.Meta.whnf (Expr.const ``wf_fake._unary [])
+set_option trace.debug true in
+#eval do trace[debug] Expr.eta <| ← withTransparency .all <| whnf (mkAppN (Expr.const ``wf_fake []) #[(.const ``Bool.false []), (.const ``Bool.false [])])
+#check WellFounded.fix_eq
+#eval Lean.Compiler.LCNF.toDecl (``wf_fake._unary) |>.run
+#eval Lean.Compiler.LCNF.toDecl (``WellFounded.fix) |>.run
+#check List.rec
+def _root_.Nat.isEven: Nat → Bool
+  | 0 => .true
+  | n+1 => not n.isEven
+#print Nat.isEven
+#eval withTransparency .all <| whnfEvalEta <| (Expr.const ``Nat.isEven []).app (mkRawNatLit 1)
+#check Nat.rec
+
+
+#eval do
+  let e := (Expr.const ``len_manual_mono [])
+  let e ← withTransparency .all <| reduce e
+  dbg!' ← reduceRecMatcher? e
+  return ToString.toString e
+#eval Lean.getConstInfoRec ``Acc.rec
 #check Acc.rec
 #check Eq.rec
 #eval do println! ← withTransparency .all <| whnfEvalEta (.const ``len_manual_mono [])
@@ -600,6 +680,7 @@ def wouldOverflow (n m : BitVec w): Bool :=
 def saturatingAdd (n m : BitVec w): BitVec w :=
   if wouldOverflow n m then BitVec.natMax else
   n + m
+def saturatingAddMono := saturatingAdd (w:=2)
 def t := fun (x y : BitVec 3) => (x < y: Bool)
 def t2 := fun (x y : BitVec 3) => x.ult y
 def t3 := fun (x y : BitVec 3) => x.ule y
@@ -614,8 +695,9 @@ open scoped BitVec in
 #eval
   let a: BitVec 2 := 3#'(by omega)
   a
+#eval BitVec.ofInt 2 (-1)
+#eval BitVec.ofInt 2 (-1) |>.toInt
 
-def saturatingAddMono := saturatingAdd (w:=2)
 #eval do println! ← emit (``t)
 #eval do println! ← emit (``t2)
 #eval do println! ← emit (``t3)
