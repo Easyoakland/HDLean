@@ -56,7 +56,7 @@ def denylist: NameSet := (NameSet.empty
   -- |>.insert ``instDecidableLtBitVec
   -- |>.insert ``instDecidableLeBitVec
 )
-def whnf := @whnfWithDenylist' (inlineMatchers:=true) denylist
+partial def whnfEvalEta (e:Expr): MetaM Expr := @Hdlean.Meta.whnfEvalEta denylist e true
 
 /-- A function is synthesizable if all arguments and the return type are synthesizable. This means that they either can be erased (`Sort _`) or have a known unboxed size. This also works for a function with 0 args (a type). -/
 def forallIsSynthesizable (type:Expr): MetaM Bool := forallTelescope type fun args body => do
@@ -163,7 +163,7 @@ partial def compileRecursor (recursor : RecursorVal) (args : Array Expr) : Compi
   let major := args[recursor.getMajorIdx]!
   -- Return type is found by applying indices and major premise to motive.
   -- If the type depends on the major premise's values this will fail, otherwise whnf will simplify to the monomorphic type. The `+1` is for the major argument.
-  let retType ← whnf <| mkAppN motive args[recursor.getFirstIndexIdx:recursor.getFirstIndexIdx+recursor.numIndices+1]
+  let retType ← whnfEvalEta <| mkAppN motive args[recursor.getFirstIndexIdx:recursor.getFirstIndexIdx+recursor.numIndices+1]
   dbg!' retType
   if retType.isProp then return ValueExpr.literal "/*ZST: rec eliminates to Prop */"
   let minors := args[recursor.getFirstMinorIdx:recursor.getFirstIndexIdx].toArray
@@ -238,8 +238,7 @@ partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
   | _ => .none
 
 partial def compileValue (e : Expr) : CompilerM ValueExpr := do
-  let e ← whnf (dbg! e)
-  let e := (dbg! e).eta
+  let e ← whnfEvalEta e
   if let .some (.union #[]) := ← bitShape? (← inferType e) then
     return ValueExpr.literal "/*ZST*/"
   match dbg! e with
@@ -250,7 +249,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   | .app .. =>
     let (fn, args) := e.getAppFnArgs
     let fn := if let .some fn := dbg! ← HWImplementedBy? (dbg! e.getAppFn) then fn else fn
-    if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}, whnf := {← whnf e}"
+    if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}"
     match dbg! fn with
     | ``BitVec.ofFin =>
       let #[_w, toFin] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ofFin"
@@ -512,15 +511,14 @@ def len_manual_mono : Fin 3 := len_manual #v[0,1]
 #reduce fun (n:Nat) => (Nat.rec (motive := fun _ => List Nat) ([]) (fun x y => y.cons x) (n+2) : List Nat)
 #reduce True.rec (motive:=fun _ => String) "start" .intro
 noncomputable def testSubsingletonElim := True.rec (motive:=fun _ => String) "start" .intro
-#eval whnf (.const ``testSubsingletonElim [])
-#eval Meta.whnf (.const ``testSubsingletonElim [])
+#eval whnfEvalEta (.const ``testSubsingletonElim [])
 -- TODO I think this is working weird because the major type is Prop. But maybe not because True.rec and Nat.rec etc reduces fine.
 -- TODO alternatively, it's because there's Eq.rec and reduce doesn't seem to handle that well.
 -- TODO ah! is Acc.rec similar to Eq.rec in that it blocks reduction?! When does a recursor block reduction? What would be the intended method of reducing one of these recursors which block reduction? I'm guessing I'm going to need some kind of intermediate between whnf which is blocked on .rec and #eval which fully evaluates an expression.
 #eval do println! ← emit (``len_manual_mono) -- TODO variants = [], yet it is trying to synthesize in hardware.
 #check Acc.rec
 #check Eq.rec
-#eval do println! ← withTransparency .all <| whnf (.const ``len_manual_mono [])
+#eval do println! ← withTransparency .all <| whnfEvalEta (.const ``len_manual_mono [])
 #eval do println! ← (
     Meta.transform
     (← withTransparency .all <| reduce (explicitOnly:=false) (.const ``len_manual_mono []))

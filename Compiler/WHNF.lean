@@ -28,76 +28,73 @@ def whnfWithDenylist (denylist : NameSet) (e : Expr) : MetaM Expr :=
     { ctx with canUnfold? := some (canUnfoldDenylist denylist) }
   ) (whnf e)
 
-/-
-def _root_.Nat.myAdd := Nat.add
+def canUnfold (e:Expr): MetaM Bool := do
+  let env ← getEnv
+  let some canUnfold := Context.canUnfold? (← read) | return Bool.true
+  match do env.find? (← e.getAppFn'.const?).fst with
+  | some info => canUnfold (← getConfig) (info)
+  | none => pure Bool.true -- If not a name can't unfold anyway, so reduce like regular.
 
-#eval show MetaM Expr from do
-  let e := mkAppN (mkConst ``Nat.add) #[toExpr 3, toExpr 3]
-  let denylist := NameSet.empty
-  whnfWithDenylist denylist e -- Returns `Lean.Expr.lit (Lean.Literal.natVal 6)`
-
--- Denylist Nat.add and reduce Nat.add 3 3
-#eval show MetaM Expr from do
-  let e := mkAppN (mkConst ``Nat.add) #[toExpr 3, toExpr 3]
-  let denylist := NameSet.empty.insert `Nat.add
-  whnfWithDenylist denylist e -- Returns `Lean.Expr.lit (Lean.Literal.natVal 6)`
-
--- Denylist Nat.myAdd and reduce Nat.myAdd 3 3
-#eval show MetaM Expr from do
-  let e := mkAppN (mkConst ``Nat.myAdd) #[toExpr 3]
-  let denylist := NameSet.empty.insert `Nat.add |>.insert `Nat.myAdd
-  whnfWithDenylist denylist e -- Returns equivalent of `Nat.myAdd 3 3`
+set_option linter.unusedVariables false in
+/-- Like `unfoldDefinition?` but unfolds using (in order of priority) `implemented_by`, auxiliary `._unsafe_rec`, or actual value of constant (even if constant is `opaque`)
+- TODO(fix): optional arguments don't do anything.
 -/
+def unfoldDefinitionEval? (e : Expr) (ignoreTransparency := false) (inlineMatchers := false) : MetaM (Option Expr) := do
+  if !(← canUnfold e) then return .none
+  let fn := e.getAppFn'
+  let args := e.getAppArgs
+  let .const fn lvls := fn | return .none
+  -- Try `implemented_by`
+  if let .some fn := Compiler.getImplementedBy? (← getEnv) fn then
+    return mkAppN (.const fn lvls) args
+ -- Prioritize `._unsafe_rec`
+  let .some info ← Compiler.LCNF.getDeclInfo? fn | return .none
+  -- Unfold even if opaque.
+  if let .some fn := info.value? true then
+    return fn.beta args
+  else return .none
+  /-
+  -- Regular `unfoldDefinition?`
+  if let .some e ← unfoldDefinition? e ignoreTransparency then trace[debug] "1: instead return: {e}" return e
+  -- Try to unfold matchers
+  if !inlineMatchers then trace[debug] "2: instead return: .none" return .none
+  let e' ← Compiler.LCNF.inlineMatchers e
+  if e' == e then trace[debug] "3: instead return: .none" return .none
+  trace[debug] "4: instead return: {e'}"
+  return e' -/
 
-/-- Like `whnfImp`, but checks `canUnfold?` before doing primitive reductions so the denylist can prevent primitive reductions even when fully applied. In other words, primitives like `Nat.add` are considered to be unfolded to get reduced. Doesn't cache, so it's slower than `whnfImp`. -/
-partial def whnfImp' (e : Expr) (inlineMatchers:=false) : MetaM Expr :=
+/-- A hybrid of `Lean.Meta.whnfImp` and eval. Different from `Lean.Meta.whnfImp` in that:
+- Checks `canUnfold?` before doing primitive reductions so the denylist can prevent primitive reductions even when fully applied. In other words, primitives like `Nat.add` are considered to be unfolded to get reduced.
+  - TODO(fix): Doesn't cache, so it's slower than `whnfImp`.
+- Unfolds using unfoldDefinitionEval? (in order of priority) `implemented_by`, auxiliary `._unsafe_rec`, or actual value of constant (even if constant is `opaque`).
+-/
+partial def whnfEvalImp (e : Expr) (inlineMatchers := false) : MetaM Expr :=
   withIncRecDepth <| whnfEasyCases e fun e => do
-      withTraceNode `Meta.whnf (fun _ => return m!"Non-easy whnf: {e}") do
+      withTraceNode `Meta.whnf (fun _ => return m!"Non-easy whnfEval: {e}") do
         checkSystem "whnf"
-        let e' ← whnfCore e
-        let some canUnfold := Context.canUnfold? (← read) | throwError "no `canUnfold` in `whnfImp'`"
-        let env ← getEnv
-        let canUnfold ← match do env.find? (← e.getAppFn'.const?).fst with
-          | some info => do canUnfold (← getConfig) (info)
-          | none => pure Bool.true -- If not a name can't unfold anyway, so reduce like regular.
-        if canUnfold then
+        if ← canUnfold e then
+          let e' ← whnfCore e
           match (← reduceNat? e') with
           | some v => pure v
           | none   =>
             match (← reduceNative? e') with
             | some v => pure v
             | none   =>
-              match (← unfoldDefinition? e') with
-              | some e'' => whnfImp' e'' inlineMatchers
-              | none =>
-                if !inlineMatchers || (← match (e'.getAppFn).constName? with
-                  | .none => pure .none
-                  | .some name => getMatcherInfo? name).isNone then pure e'
-                else whnfImp' (inlineMatchers:=inlineMatchers) <| ← Compiler.LCNF.inlineMatchers e'
-                -- match (← delta? e') with
-                -- | .some e'' => pure (← whnfImp' e'')
-                -- | none => pure e'
+              match ← unfoldDefinitionEval? e' (inlineMatchers:=inlineMatchers) with
+              | some e' => whnfEvalImp e' inlineMatchers
+              | none => pure e'
         else pure e
 
-/-- Like `whnfWithDenylist` but using `whnfImp'` so the denylist can include primitive reductions like `Nat.add`. Slower than `whnfWithDenylist` because it uses `whnfImp` which doesn't Cache. -/
-def whnfWithDenylist' (denylist : NameSet) (e : Expr) (inlineMatchers:=false)  : MetaM Expr :=
+/-- Like `whnf` but using `whnfEvalImp` and a denylist of definitions to not unfold. -/
+def whnfEval (denylist : NameSet) (e : Expr) (inlineMatchers := false): MetaM Expr :=
   withTheReader Meta.Context (fun ctx =>
     { ctx with canUnfold? := some (canUnfoldDenylist denylist) }
-  ) (whnfImp' e inlineMatchers)
+  ) (whnfEvalImp e inlineMatchers)
 
-/- -- Denylist Nat.add and reduce Nat.add 3 3
-#eval show MetaM Expr from do
-  let e := mkAppN (mkConst ``Nat.add) #[toExpr 3,toExpr 3]
-  let denylist := NameSet.empty
-  whnfWithDenylist' denylist e -- Returns `Lean.Expr.lit (Lean.Literal.natVal 6)`
-
-#eval show MetaM Expr from do
-  let e := mkAppN (mkConst ``Nat.add) #[toExpr 3,toExpr 3]
-  let denylist := NameSet.empty.insert `Nat.add
-  whnfWithDenylist' denylist e -- Returns equivalent of `Nat.add 3 3`
- -/
-
-/-
-/-- Like whnfHeadPred but expands matchers  -/
-def whnfDeltaHeadPred' (e : Expr) (pred : Expr → MetaM Bool) : MetaM Expr := whnfHeadPred
--/
+partial def whnfEvalEta (denylist : NameSet) (e : Expr) (inlineMatchers := false): MetaM Expr := do
+  let res ← @whnfEval (inlineMatchers:=inlineMatchers) denylist e
+  let resEta := res.eta
+  if res != resEta then
+    @whnfEvalEta denylist resEta inlineMatchers
+  else
+    return res
