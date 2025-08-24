@@ -163,7 +163,7 @@ major = {args[recursor.getMajorIdx]!}
 extra args = {args[recursor.getMajorIdx+1:]}"
   if recursor.numMotives != 1 then throwError "Number of motives != 1 for {recursor.name}"
   if args.size < recursor.getMajorIdx+1 then throwError "Recursor {recursor.name} underapplied"
-  if args.size > recursor.getMajorIdx+1 then throwError s!"TODO: extra args: {args[recursor.getMajorIdx+1:]}"
+  if args.size > recursor.getMajorIdx+1 then throwError "TODO: extra args: {args[recursor.getMajorIdx+1:]}"
   let motive ← reduce args[recursor.numParams]!
   let major := args[recursor.getMajorIdx]!
   -- Return type is found by applying indices and major premise to motive.
