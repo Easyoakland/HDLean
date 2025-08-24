@@ -57,7 +57,10 @@ def denylist: NameSet := (NameSet.empty
   -- |>.insert ``instDecidableLtBitVec
   -- |>.insert ``instDecidableLeBitVec
 )
-partial def whnfEvalEta (e:Expr): MetaM Expr := @Hdlean.Meta.whnfEvalEta denylist e true
+
+def whnfEvalEta (e:Expr): MetaM Expr := @Hdlean.Meta.whnfEvalEta denylist e
+
+def unfoldDefinitionEval? := fun body => withDenylist denylist (Hdlean.Meta.unfoldDefinitionEval? body)
 
 /-- A function is synthesizable if all arguments and the return type are synthesizable. This means that they either can be erased (`Sort _`) or have a known unboxed size. This also works for a function with 0 args (a type). -/
 def forallIsSynthesizable (type:Expr): MetaM Bool := forallTelescope type fun args body => do
@@ -545,7 +548,7 @@ set_option trace.hdlean.compiler.compileRecursor true
 set_option trace.hdlean.compiler.compileValue true
 set_option trace.Meta.whnf true in
 #eval do println! ← emit (``len_manual_mono')
-#eval withTransparency .all <| Meta.unfoldDefinitionEval? (ignoreTransparency := true) (.const ``len_manual' [])
+#eval withTransparency .all <| Meta.unfoldDefinitionEval? (.const ``len_manual' [])
 #eval delta? (.const ``len_manual' [])
 #eval do return ← Lean.getConstInfo ``len_manual_mono'
 set_option trace.debug true in

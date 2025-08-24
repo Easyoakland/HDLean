@@ -37,9 +37,8 @@ def canUnfold (e:Expr): MetaM Bool := do
 
 set_option linter.unusedVariables false in
 /-- Like `unfoldDefinition?` but unfolds using (in order of priority) `implemented_by`, auxiliary `._unsafe_rec`, or actual value of constant (even if constant is `opaque`)
-- TODO(fix): optional arguments don't do anything.
 -/
-def unfoldDefinitionEval? (e : Expr) (ignoreTransparency := false) (inlineMatchers := false) : MetaM (Option Expr) := do
+def unfoldDefinitionEval? (e : Expr) : MetaM (Option Expr) := do
   if !(← canUnfold e) then return .none
   let fn := e.getAppFn'
   let args := e.getAppArgs
@@ -50,7 +49,7 @@ def unfoldDefinitionEval? (e : Expr) (ignoreTransparency := false) (inlineMatche
  -- Prioritize `._unsafe_rec`
   let .some info ← Compiler.LCNF.getDeclInfo? fn | return .none
   -- Unfold even if opaque.
-  if let .some fn := info.value? true then
+  if let .some fn := info.value? (allowOpaque := true) then
     return fn.beta args
   else return .none
   /-
@@ -68,11 +67,11 @@ def unfoldDefinitionEval? (e : Expr) (ignoreTransparency := false) (inlineMatche
   - TODO(fix): Doesn't cache, so it's slower than `whnfImp`.
 - Unfolds using unfoldDefinitionEval? (in order of priority) `implemented_by`, auxiliary `._unsafe_rec`, or actual value of constant (even if constant is `opaque`).
 -/
-partial def whnfEvalImp (e : Expr) (inlineMatchers := false) : MetaM Expr :=
-  withIncRecDepth <| whnfEasyCases e fun e => do
+partial def whnfEvalImp (e : Expr) : MetaM Expr :=
+  withIncRecDepth <| whnfEasyCases (dbg! e) fun e => do
       withTraceNode `Meta.whnf (fun _ => return m!"Non-easy whnfEval: {e}") do
         checkSystem "whnf"
-        if ← canUnfold e then
+        if ← canUnfold (dbg! e) then
           let e' ← whnfCore e
           match (← reduceNat? e') with
           | some v => pure v
@@ -80,21 +79,28 @@ partial def whnfEvalImp (e : Expr) (inlineMatchers := false) : MetaM Expr :=
             match (← reduceNative? e') with
             | some v => pure v
             | none   =>
-              match ← unfoldDefinitionEval? e' (inlineMatchers:=inlineMatchers) with
-              | some e' => whnfEvalImp e' inlineMatchers
+              match ← unfoldDefinitionEval? e' with
+              | some e' => whnfEvalImp e'
               | none => pure e'
         else pure e
 
-/-- Like `whnf` but using `whnfEvalImp` and a denylist of definitions to not unfold. -/
-def whnfEval (denylist : NameSet) (e : Expr) (inlineMatchers := false): MetaM Expr :=
-  withTheReader Meta.Context (fun ctx =>
-    { ctx with canUnfold? := some (canUnfoldDenylist denylist) }
-  ) (whnfEvalImp e inlineMatchers)
+/-- Run `MetaM α` with `canUnfold?` set such that it respects `denylist` -/
+def withDenylist (denylist : NameSet) (a:MetaM α) : MetaM α := do
+  let prevCanUnfold := (← read).canUnfold? |>.getD (fun _ _ => pure true)
+  withReader (fun ctx =>
+    {ctx with canUnfold? := some (fun cfg info => do return (← prevCanUnfold cfg info)
+      && (←  canUnfoldDenylist denylist cfg info))}
+  ) a
 
-partial def whnfEvalEta (denylist : NameSet) (e : Expr) (inlineMatchers := false): MetaM Expr := do
-  let res ← @whnfEval (inlineMatchers:=inlineMatchers) denylist e
+/-- Like `whnf` but using `whnfEvalImp` and a denylist of definitions to not unfold. -/
+def whnfEval (denylist : NameSet) (e : Expr): MetaM Expr :=
+  withDenylist denylist <|
+    whnfEvalImp e
+
+partial def whnfEvalEta (denylist : NameSet) (e : Expr) : MetaM Expr := do
+  let res ← @whnfEval denylist e
   let resEta := res.eta
   if res != resEta then
-    @whnfEvalEta denylist resEta inlineMatchers
+    @whnfEvalEta denylist resEta
   else
     return res
