@@ -266,36 +266,37 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     | .none => throwError "Unknown free variable: {fvarId}"
   | .app .. =>
     let (fn, args) := e.getAppFnArgs
+    let invalidNumArgs := fun () => m!"Invalid number of arguments ({args.size}) for {fn}"
     let fn := if let .some fn := ← HWImplementedBy? e.getAppFn then fn else fn
     if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}"
     match fn with
     | ``BitVec.ofFin =>
-      let #[_w, toFin] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ofFin"
+      let #[_w, toFin] := args | throwError invalidNumArgs ()
       let val ← compileValue toFin
       return val
     | ``Fin.mk =>
-      let #[n, val, _isLt] := args | throwError "Invalid number of arguments ({args.size}) for Fin.mk"
+      let #[n, val, _isLt] := args | throwError invalidNumArgs ()
       let val ← compileValue val
       let n ← unsafe Meta.evalExpr Nat (.const ``Nat {}) n
       let lit := match val.emit with |.none => "" |.some val => s!"{n.ceilLog2}'{val}" -- Add width annotation
       return .literal lit
     | ``BitVec.mul =>
-      let #[_n, x, y] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.mul"
+      let #[_n, x, y] := args | throwError invalidNumArgs  ()
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .mul x y
     | ``BitVec.add =>
-      let #[_n, x, y] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.add"
+      let #[_n, x, y] := args | throwError invalidNumArgs ()
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .add x y
     | ``BitVec.ult =>
-      let #[_n, x, y] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ult"
+      let #[_n, x, y] := args | throwError invalidNumArgs ()
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .lt x y
     | ``BitVec.ule =>
-      let #[_n, x, y] := args | throwError "Invalid number of arguments ({args.size}) for BitVec.ule"
+      let #[_n, x, y] := args | throwError invalidNumArgs ()
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .le x y
