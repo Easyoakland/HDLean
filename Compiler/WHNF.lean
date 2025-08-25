@@ -68,10 +68,10 @@ def unfoldDefinitionEval? (e : Expr) : MetaM (Option Expr) := do
 - Unfolds using unfoldDefinitionEval? (in order of priority) `implemented_by`, auxiliary `._unsafe_rec`, or actual value of constant (even if constant is `opaque`).
 -/
 partial def whnfEvalImp (e : Expr) : MetaM Expr :=
-  withIncRecDepth <| whnfEasyCases (dbg! e) fun e => do
+  withIncRecDepth <| whnfEasyCases e fun e => do
       withTraceNode `Meta.whnf (fun _ => return m!"Non-easy whnfEval: {e}") do
         checkSystem "whnf"
-        if ← canUnfold (dbg! e) then
+        if ← canUnfold e then
           let e' ← whnfCore e
           match (← reduceNat? e') with
           | some v => pure v
