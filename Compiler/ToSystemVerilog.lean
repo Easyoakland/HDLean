@@ -320,6 +320,7 @@ end
 partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit := do
   match e with
   | .mdata _ body => compileAssignment space body
+  -- TODO, does this letE case make any sense?
   | .letE _ _ value body _ => do
       let valueVal ← compileValue value
       let valueType ← inferType value
@@ -336,7 +337,7 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
   | e => throwError "Unsupported statement expression: {e}"
 
 /-- Add module(s) corresponding to a function to the back of the list to be emitted as well as returning it. `fun x y z => body` becomes
-  ```
+  ```systemverilog
   module(
     input x
     ,input y
