@@ -2,6 +2,7 @@ import Lean
 import Std
 
 import Hdlean.Basic
+import Hdlean.SigmaMealy
 import Compiler.BitShape
 import Compiler.Netlist
 import Compiler.WHNF
@@ -52,6 +53,8 @@ def denylist: NameSet := (NameSet.empty
   |>.insert ``BitVec.mul
   |>.insert ``BitVec.ult
   |>.insert ``BitVec.ule
+  |>.insert ``Mealy.pure
+  |>.insert ``Mealy.scan
   -- |>.insert ``instLTBitVec
   -- |>.insert ``instLEBitVec
   -- |>.insert ``instDecidableLtBitVec
@@ -252,6 +255,58 @@ partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
   | (.const ``instDecidableLtBitVec []) => .some ``instDecidableLtBitVecHW
   | _ => .none
 
+/-- Given an expression `Mealy.scan s f reset` which represents a registered state element,
+return the output `ValueExpr` and `HWType` corresponding to `o` in the following (where <<>> indicates lean and the rest is SystemVerilog):
+```systemverilog
+logic var /*space for σ*/ state = <<compileValue reset>>
+logic var /*space for σ*/ new_state
+logic var /*space for β*/ o
+assign {o, new_state} = <<compileValue f s state>>
+always_ff @(posedge clk)
+  state <= new_state
+```
+-/
+partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
+  let (fn, args) := e.getAppFnArgs
+  if fn != ``Mealy.scan then panic! "HDLean Internal Error: fn not Mealy.scan"
+  let invalidNumArgs := fun () => m!"Invalid number of arguments ({args.size}) for {fn}"
+  let #[α,β,σ,s,f,reset] := args | throwError invalidNumArgs ()
+  trace[debug] "α={α},β={β},σ={σ},s={s},f={f},reset={reset}"
+  trace[debug] "s={s},f={f},reset={reset}"
+  let stateName ← mkFreshUserName `registerState
+  let newStateName ← mkFreshUserName `newRegisterState
+  let outputName ← mkFreshUserName `registerOutput
+  let .some σShape ← bitShape? σ | throwError dbg! "TODO"
+  let .some βShape ← bitShape? β | throwError dbg! "TODO"
+  let σHWType ← getHWType σShape
+  let βHWType ← getHWType βShape
+  addItem <| .var { name := stateName, type := σHWType }
+  addItem <| .var { name := newStateName, type := σHWType }
+  addItem <| .var { name := outputName, type := βHWType }
+  let resetValue ← compileValue reset
+  let sValue ← compileValue s
+  -- TODO handle reset value with initial block.
+  -- TODO decide how to do resets and clock passing.
+  -- TODO use resetValue when doing reset.
+  trace[debug] "resetValue: {resetValue}"
+  -- TODO combine `withLocalDeclD` with modifying `CompileContext` instad of manually doing both.
+  withLocalDeclD `s (← inferType s) fun sFVar => do
+  withLocalDeclD `state (← inferType reset) fun stateFVar => do
+  withReader (fun ctx => {ctx with env := (
+    ctx.env
+      |>.insert sFVar.fvarId! sValue
+      |>.insert stateFVar.fvarId! (.identifier stateName)
+  )}) do
+    let appliedF ← compileValue (mkApp2 f sFVar stateFVar)
+    addItem <| .assignment .blocking
+      (.concatenation [.identifier outputName, .identifier newStateName])
+      (appliedF)
+    addItem <| .alwaysClocked .posedge `clk [
+      Stmt.assignment .nonblocking (.identifier stateName) (.identifier newStateName)
+    ]
+    pure ()
+  return (.identifier outputName, βHWType)
+
 partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   trace[hdlean.compiler.compileValue] "compiling value: {e}"
   let e ← whnfEvalEta e
@@ -300,6 +355,12 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .le x y
+    | ``Mealy.pure =>
+      let #[_α, a] := args | throwError invalidNumArgs ()
+      -- `Mealy.pure` is treated transparently.
+      compileValue a
+    | ``Mealy.scan =>
+      Prod.fst <$> compileMealyScan e
     | fn =>
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
@@ -349,31 +410,47 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
   ```
 -/
 partial def compileFun (fn: Expr): CompilerM Module := do
-  lambdaTelescope (← etaExpand fn) fun args body => do
+  lambdaTelescope (← etaExpand <| ← whnfEvalEta fn) fun args body => do
   trace[hdlean.compiler.compileFun] "compiling {fn}
 args = {args}
 body = {body}"
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
-  if !(← forallIsSynthesizable (← inferType body)) then
-    let err := fun () => s!"Unsynthesizable body is not unfoldable: {body}, args={args}"
-    let .some body' ← delta? body | throwError err ()
-    if body' == body then throwError err ()
-    return ← compileFun (← mkLambdaFVars args body')
-  let retShape ← bitShape! (← Meta.returnTypeV body args)
+  let compiledBody? ← if !(← forallIsSynthesizable (← inferType body)) then
+    let err := fun () => m!"Unsynthesizable function body is not unfoldable:"
+      ++ MessageData.nestD m!"{Std.Format.line}{body},{Std.Format.line}args={args}"
+    match ← withDenylist denylist (unfoldDefinitionEval? body) with
+    | .some body' =>
+      if body' == body then throwError err ()
+      return ← compileFun (← mkLambdaFVars args body')
+    | .none =>
+      -- TODO this is probably wrong. e.g. `Mealy (Mealy BitVec 3)`, should not be synthesizable.
+      -- Probably need a flag in `CompileM` keeping track of currently compiling in time or space, or if currently compiling inside a context with a clock, or compiling inside a scan statement, etc...
+      if body.getAppFn.constName? == ``Mealy.pure then
+        let .some body ← Hdlean.Meta.unfoldDefinitionEval? body | throwError "Can't unfold Mealy.pure"
+        return ← compileFun <| ← whnfEvalEta <| ← mkAppM ``Mealy.value #[body]
+      else if body.getAppFn.constName? == ``Mealy.scan then
+        let compiledBody ← compileMealyScan body
+        pure <| Option.some compiledBody
+      else
+        throwError err ()
+    else pure Option.none
+  let retHWType ← match compiledBody? with
+  | .none => getHWType (← bitShape! (← Meta.returnTypeV body args))
+  | .some (_, compiledBodyHWType) => pure compiledBodyHWType
   -- Convert function arguments to module ports.
   let mut parameters := #[]
   let mut ports := #[]
   for arg in args do
     let argType ← inferType arg
-    let .some argShape ← bitShape? argType | throwError "Argument `{arg}:{argType}` is unsynthesizable"
+    let .some argShape ← bitShape? argType | throwError "Argument is unsynthesizable: {arg}"
     ports := ports.push {
       name := ← arg.fvarId!.getUserName,
-      type := { width := argShape.totalWidth },
+      type := ← getHWType argShape,
       direction := .input
     }
   ports := ports.push {
     name := `o,
-    type := { width := retShape.totalWidth },
+    type := retHWType,
     direction := .output
   }
   -- Intantiate the function and assign the result of the function call to the output port.
@@ -382,7 +459,9 @@ body = {body}"
       let name := ← arg.fvarId!.getUserName
       return map.insert arg.fvarId! (.identifier name)
   }
-  withReader (fun _ => ctx) <| compileAssignment (.identifier `o) body
+  match compiledBody? with
+  | .none => withReader (fun _ => ctx) <| compileAssignment (.identifier `o) body
+  | .some (compiledBodyValue, _) => addItem <| .assignment .blocking (.identifier `o) compiledBodyValue
   -- Save the module to the CompileM state of modules to emit and return it.
   let name ← mkFreshUserName `mod
   let mod := { name, parameters, ports, items := (←get).items }
@@ -408,7 +487,7 @@ def emit (name : Name) : MetaM Std.Format := do
 -- TODO use an actual unit testing framework
 -- TODO delete.
 section Testing
-def f: Bool:= .true
+/- def f: Bool:= .true
 #eval do println! ← emit (``f)
 #check Nat.add._sunfold
 #print Nat.add._sunfold
@@ -706,8 +785,67 @@ open scoped BitVec in
 #eval do println! ← emit (``t)
 #eval do println! ← emit (``t2)
 #eval do println! ← emit (``t3)
-#eval do println! ← emit (``saturatingAddMono)
+#eval do println! ← emit (``saturatingAddMono) -/
 
 end Testing
+
+section TestingMealy
+def use_mealy_pure : Mealy (BitVec 3) := Mealy.pure 1
+
+-- set_option trace.Meta.whnf true in
+set_option trace.debug true
+set_option trace.hdlean.compiler true
+#eval do println! ← emit (``use_mealy_pure)
+
+def use_mealy_scan : Mealy (BitVec 3) := Mealy.scan (use_mealy_pure) fun v (st:BitVec 4) => (v, st)
+#eval do println! ← emit (``use_mealy_scan)
+def use_mealy_scan' : Mealy (BitVec 3) := Mealy.scan (id use_mealy_pure) fun v (st:BitVec 3) => (v+st, st)
+#eval do println! ← emit (``use_mealy_scan')
+def use_mealy_scan'' : Mealy (BitVec 3) := Mealy.scan (use_mealy_scan') fun v (st:BitVec 3) => (v+2*st, st+1)
+#eval do println! ← emit (``use_mealy_scan'')
+end TestingMealy
+
+def cyclic_fibonacci_series : Mealy (BitVec n) :=
+  (Mealy.pure ()).scan (reset:=(0,1))
+    (fun () ((prev2: BitVec n), (prev1: BitVec n)) =>
+      let next := prev2+prev1
+      (prev2, (prev1,next)))
+
+open NotSynthesizable in
+#eval simulate (cyclic_fibonacci_series (n:=16)) (Array.replicate 20 ()) |>.take 20 |>.map fun x => x.fst.value
+open NotSynthesizable in
+#eval simulate (cyclic_fibonacci_series (n:=16)) (Array.replicate 20 ()) |>.take 20 |>.map fun x => x.fst.repr' 0 (inst:=by rw [x.snd.left]; reduceAll; exact inferInstance) |> ToString.toString
+
+def cyclic_fibonacci_series_mono := cyclic_fibonacci_series (n:=18)
+#eval do println! ← emit (``cyclic_fibonacci_series_mono)
+
+/-
+TODO, need feedback/mutual recursion to do something like this?
+def cyclic_fibonacci_series' : Mealy (BitVec n) :=
+  let prev2 := register 0 prev1
+  let prev1 := register 1 prev2+prev1
+-/
+
+def delay1 [reset:Inhabited α] (s:Mealy α): Mealy α := s.scan (fun v st => (st,v))
+
+-- Ok, this is cool and It Just Works™.
+def delayN (n:Nat) [reset:Inhabited α] (s:Mealy α): Mealy α := Id.run do
+  let mut s := s
+  for _ in [0:n] do
+    s := delay1 s
+  pure s
+
+def delay1_mono := delay1 (α:=BitVec 3) (cyclic_fibonacci_series)
+
+def delay4 [reset:Inhabited α] (s:Mealy α): Mealy α := delayN 4 s
+
+def delay4_mono := delay4 (α:=BitVec 3) (cyclic_fibonacci_series)
+
+#eval do println! ← emit (``delay1_mono)
+#eval do println! ← emit (``delay4_mono)
+
+open NotSynthesizable in
+#eval! simulate (delayN 3 (α:=BitVec 14) cyclic_fibonacci_series) (Array.replicate 20 (cast sorry ())) |>.take 20 |>.map fun x => x.fst.value |> ToString.toString
+-- TODO, reduce using `Hdlean.Meta.whnfEvalEta` so it uses _unsafe.rec in order to get stuff like delay4_mono.σ to actually evaluate instead of getting stuck in `Acc.rec` madness.
 
 end Hdlean.Compiler
