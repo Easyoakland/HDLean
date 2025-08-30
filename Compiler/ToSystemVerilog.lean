@@ -50,9 +50,11 @@ def denylist: NameSet := (NameSet.empty
   |>.insert ``Fin.mk
   |>.insert ``BitVec.ofFin
   |>.insert ``BitVec.add
+  |>.insert ``BitVec.sub
   |>.insert ``BitVec.mul
   |>.insert ``BitVec.ult
   |>.insert ``BitVec.ule
+  |>.insert ``BitVec.decEq
   |>.insert ``Mealy.pure
   |>.insert ``Mealy.scan
   -- |>.insert ``instLTBitVec
@@ -345,6 +347,11 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .add x y
+    | ``BitVec.sub =>
+      let #[_n, x, y] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .sub x y
     | ``BitVec.ult =>
       let #[_n, x, y] := args | throwError invalidNumArgs ()
       let x ← compileValue x
@@ -355,6 +362,11 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .le x y
+    | ``BitVec.decEq =>
+      let #[_w, x, y] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .eq x y
     | ``Mealy.pure =>
       let #[_α, a] := args | throwError invalidNumArgs ()
       -- `Mealy.pure` is treated transparently.
