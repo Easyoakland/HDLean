@@ -327,7 +327,7 @@ inductive ModuleItem
 open Std.Format in
 def ModuleItem.emit: ModuleItem → Std.Format
   | .var val => val.emit.getD s!"/* ZST variable declaration: {val.name.emit} */"
-  | .assignment assign space value => (do s!"assign {← space.emit} {assign.emit} {← value.emit}").getD ((do s!"/* ZST assign: {← space.emit} */").getD "/* ZST assign */")
+  | .assignment assign space value => (do s!"assign {← space.emit} {assign.emit} {← value.emit};").getD ((do s!"/* ZST assign: {← space.emit} */").getD "/* ZST assign */")
   | .initial stmts => let stmts := stmts.map (·.emit)
     let stmts := stmts.filterMap id -- remove unrendered ZST statements
     if stmts.length = 0 then default else -- if no statements render nothing
