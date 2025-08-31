@@ -225,6 +225,7 @@ partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Arr
   trace[hdlean.compiler.compileCtor] "compiling ctor: {ctor.name}"
   let params := args.extract 0 ctor.numParams
   let fields := args.extract ctor.numParams (ctor.numParams+ctor.numFields)
+  if args.size > ctor.numParams+ctor.numFields then throwError "TODO: extra ctor args"
   trace[hdlean.compiler.compileCtor] "params = {params}"
   trace[hdlean.compiler.compileCtor] "fields = {fields}"
   let inductType := mkAppN (.const ctor.induct levels) params
@@ -321,7 +322,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     match (← read).env.get? fvarId with
     | .some value => pure value
     | .none => throwError "Unknown free variable: {fvarId}"
-  | .app .. =>
+  | .app .. | .const .. =>
     let (fn, args) := e.getAppFnArgs
     let invalidNumArgs := fun () => m!"Invalid number of arguments ({args.size}) for {fn}"
     let fn := if let .some fn := ← HWImplementedBy? e.getAppFn then fn else fn
@@ -378,13 +379,6 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       | .recInfo val => compileRecursor val args
       | .ctorInfo val => compileCtor val e.getAppFn.constLevels! args
       | _ => throwError "Unsupported function application: {e}"
-  | .const name _ =>
-    if let .ctorInfo val ← Lean.getConstInfo name then
-      if val.numFields != 0 then throwError "Underapplied ctor: {name}"
-      let tag := val.cidx
-      compileValue (.lit <| .natVal tag)
-    else
-      throwError "Unsupported constant which is not unfoldable: {name} := {e}"
   | .lit e => return .literal <| match e with |.natVal n => s!"{n}" |.strVal s => s
   | .proj typeName idx s => compileExprProj typeName idx s
   | _ => throwError "Unsupported expression: {e}"
