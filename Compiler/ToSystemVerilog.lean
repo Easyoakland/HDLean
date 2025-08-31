@@ -47,8 +47,6 @@ def tagHWType (shape : BitShape) : CompilerM HWType := do
   return { width := shape.tagBits }
 
 def denylist: NameSet := (NameSet.empty
-  |>.insert ``Fin.mk
-  |>.insert ``BitVec.ofFin
   |>.insert ``BitVec.add
   |>.insert ``BitVec.sub
   |>.insert ``BitVec.mul
@@ -63,6 +61,8 @@ def denylist: NameSet := (NameSet.empty
   -- |>.insert ``instDecidableLeBitVec
 )
 
+-- TODO, denylist (or new list) which is used to only prevent unfolding if at least one argument to the function is unknown (contains meta or free variable), otherwise should reduce like regular since the result is guaranteed not to contain a free or meta var if it doesn't have any to start with. This way we can do more compile-time computation without getting blocked when we don't need to be.
+-- Note, if the function is over-applied and there's meta/free vars in the overapplied arguments, that doesn't matter for the purpose of unfolding the function.
 def whnfEvalEta (e:Expr): MetaM Expr := @Hdlean.Meta.whnfEvalEta denylist e
 
 def unfoldDefinitionEval? := fun body => withDenylist denylist (Hdlean.Meta.unfoldDefinitionEval? body)
