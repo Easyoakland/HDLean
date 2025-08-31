@@ -109,7 +109,7 @@ v.y
 ```
 -/
 def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctorVal : ConstructorVal) (fieldIdx:Nat) (fieldType:Expr) : CompilerM ValueExpr := do
-  let shape ← bitShape! constructedValType
+  let .some shape ← bitShape? constructedValType | throwError "HDLean Internal Error: field projection of type without bitShape: {constructedValType}"
   if let .union #[] := shape then return ValueExpr.literal "/*ZST*/"
   let (tagWidth, fieldShapes) ← do
     match shape with
@@ -185,10 +185,6 @@ extra args = {args[recursor.getMajorIdx+1:]}"
   let majorVal ← compileValue major
   let majorType ← inferType major
   let majorInductVal ← Lean.getConstInfoInduct recursor.getMajorInduct
-  let some majorShape ← bitShape? majorType | throwError "Major type not synthesizable: {majorType}"
-  let majorTag ← mkFreshUserName (recursor.getMajorInduct ++ `tag)
-  addItem <| .var { name := majorTag, type := ← tagHWType majorShape }
-  addItem <| .assignment .blocking (.identifier majorTag) (.bitSelect majorVal [0:majorShape.tagBits])
   trace[hdlean.compiler.compileRecursor] "compiling {minors.size} ctor cases"
   let cases ← minors.mapIdxM fun idx minor => do
     trace[hdlean.compiler.compileRecursor] "compiling minor for ctor {idx}"
@@ -217,7 +213,15 @@ extra args = {args[recursor.getMajorIdx+1:]}"
   match minors.size with
   | 0 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) undefinedValue
   | 1 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) cases[0]!.snd
-  | _ => addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorShape) cases.toList (.some undefinedValue)]
+  | _ =>
+    let some majorShape ← bitShape? majorType | throwError "Major type not synthesizable:
+major = {major}
+majorVal = {majorVal}
+majorType = {majorType}"
+    let majorTag ← mkFreshUserName (recursor.getMajorInduct ++ `tag)
+    addItem <| .var { name := majorTag, type := ← tagHWType majorShape }
+    addItem <| .assignment .blocking (.identifier majorTag) (.bitSelect majorVal [0:majorShape.tagBits])
+    addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorShape) cases.toList (.some undefinedValue)]
   return .identifier recRes
 
 /-- Compile a constructor in the opposite way that a FieldProjection is compiled.  -/
