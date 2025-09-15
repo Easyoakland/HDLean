@@ -46,8 +46,7 @@ deriving instance Repr for
   Lean.IR.Decl,
   Std.Format.FlattenBehavior,
   Std.Format,
-  Lean.IR.LogEntry,
-  Lean.IR.CompilerState
+  Lean.IR.LogEntry
 
 deriving instance Repr for Lean.ConstMap
 deriving instance Repr for
@@ -66,6 +65,8 @@ deriving instance Repr for
 deriving instance Repr for
   Lean.Meta.ReduceMatcherResult
 deriving instance Repr for
+  Lean.ExternEntry,
+  Lean.ExternAttrData,
   Lean.Compiler.InlineAttributeKind,
   Lean.Compiler.LCNF.DeclValue,
   Lean.Compiler.LCNF.Decl
