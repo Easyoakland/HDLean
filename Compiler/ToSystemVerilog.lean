@@ -129,7 +129,7 @@ def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctor
   let name ← mkFreshUserName (.num (ctorVal.name ++ `field) fieldIdx)
   let fieldShape ← bitShape! fieldType
   addItem <| .var {name, type := ← getHWType fieldShape}
-  addItem <| .assignment .blocking (.identifier name) (.bitSelect constructedVal [start:start+width])
+  addItem <| .assignment (.identifier name) (.bitSelect constructedVal [start:start+width])
   return .identifier name
 
 -- Substitute < notation on BitVec with this, which is the same but easier to detect and block during compilation.
@@ -211,8 +211,8 @@ extra args = {args[recursor.getMajorIdx+1:]}"
   let retHWType ← getHWType (← bitShape! retType)
   addItem <| .var { name := recRes, type := retHWType }
   match minors.size with
-  | 0 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) undefinedValue
-  | 1 => addItem <| ModuleItem.assignment .blocking (.identifier recRes) cases[0]!.snd
+  | 0 => addItem <| ModuleItem.assignment (.identifier recRes) undefinedValue
+  | 1 => addItem <| ModuleItem.assignment (.identifier recRes) cases[0]!.snd
   | _ =>
     let some majorShape ← bitShape? majorType | throwError "Major type not synthesizable:
 major = {major}
@@ -220,7 +220,7 @@ majorVal = {majorVal}
 majorType = {majorType}"
     let majorTag ← mkFreshUserName (recursor.getMajorInduct ++ `tag)
     addItem <| .var { name := majorTag, type := ← tagHWType majorShape }
-    addItem <| .assignment .blocking (.identifier majorTag) (.bitSelect majorVal [0:majorShape.tagBits])
+    addItem <| .assignment (.identifier majorTag) (.bitSelect majorVal [0:majorShape.tagBits])
     addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorShape) cases.toList (.some undefinedValue)]
   return .identifier recRes
 
@@ -305,7 +305,7 @@ partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
       |>.insert stateFVar.fvarId! (.identifier stateName)
   )}) do
     let appliedF ← compileValue (mkApp2 f sFVar stateFVar)
-    addItem <| .assignment .blocking
+    addItem <| .assignment
       (.concatenation [.identifier outputName, .identifier newStateName])
       (appliedF)
     addItem <| .alwaysClocked .posedge `clk [
@@ -398,13 +398,13 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
       let valueShape ← bitShape! valueType
       let name ← mkFreshUserName `let
       addItem <| .var { name, type := ← getHWType valueShape }
-      addItem <| .assignment .blocking (.identifier name) valueVal
+      addItem <| .assignment (.identifier name) valueVal
       let letFVar ← mkFreshFVarId
       withReader (fun ctx => { ctx with env := ctx.env.insert letFVar (.identifier name) }) do
         compileAssignment space (body.instantiate1 (.fvar letFVar))
   | .app .. | .const .. | .proj .. =>
       let value ← compileValue e
-      addItem <| .assignment .blocking space value
+      addItem <| .assignment space value
   | e => throwError "Unsupported statement expression: {e}"
 
 /-- Add module(s) corresponding to a function to the back of the list to be emitted as well as returning it. `fun x y z => body` becomes
@@ -471,7 +471,7 @@ body = {body}"
   }
   match compiledBody? with
   | .none => withReader (fun _ => ctx) <| compileAssignment (.identifier `o) body
-  | .some (compiledBodyValue, _) => addItem <| .assignment .blocking (.identifier `o) compiledBodyValue
+  | .some (compiledBodyValue, _) => addItem <| .assignment (.identifier `o) compiledBodyValue
   -- Save the module to the CompileM state of modules to emit and return it.
   let name ← mkFreshUserName `mod
   let mod := { name, parameters, ports, items := (←get).items }
