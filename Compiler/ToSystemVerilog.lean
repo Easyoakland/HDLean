@@ -224,9 +224,30 @@ majorType = {majorType}"
     addItem <| .alwaysComb [.conditionalAssignment .blocking (.identifier recRes) retHWType (.identifier majorTag) (← getHWType majorShape) cases.toList (.some undefinedValue)]
   return .identifier recRes
 
-/-- Compile a constructor in the opposite way that a FieldProjection is compiled.  -/
+partial def compileList (list: Expr) : CompilerM (List ValueExpr) := do
+  let (fn, args) := (← whnfEvalEta list).getAppFnArgs
+  match fn with
+  | ``List.cons =>
+    let #[_α, head, tail] := args | throwError invalidNumArgs args fn
+    return .cons (← compileValue head) (← compileList tail)
+  | ``List.nil => return []
+  | fn => throwError "HDLean Internal Error: {fn} not a List constructor"
+
+/-- Compile a constructor.
+
+By default this is done in the opposite way that a FieldProjection is compiled, but there are some special cases.
+ -/
 partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Array Expr) : CompilerM ValueExpr := do
   trace[hdlean.compiler.compileCtor] "compiling ctor: {ctor.name}"
+  match ctor.name with
+  | ``Vector.mk =>
+    let #[_α, _n, toArray, _h] := args | throwError invalidNumArgs args ctor.name
+    let (fn, args) := (← whnfEvalEta toArray).getAppFnArgs
+    assert! fn == ``Array.mk
+    let #[_α, toList] := args | throwError invalidNumArgs args ``Array.mk
+    let vals ← compileList toList
+    return .concatenation vals
+  | _ =>
   let params := args.extract 0 ctor.numParams
   let fields := args.extract ctor.numParams (ctor.numParams+ctor.numFields)
   if args.size > ctor.numParams+ctor.numFields then throwError "TODO: extra ctor args"
@@ -267,6 +288,8 @@ partial def clockName := `clk
 partial def activeLowResetValue := compileValue (mkNatLit 0)
 partial def activeHighResetValue := compileValue (mkNatLit 1)
 
+partial def invalidNumArgs (args: Array α) (fn: Name): MessageData := m!"Invalid number of arguments ({args.size}) for {fn}"
+
 /-- Given an expression `Mealy.scan s f reset` which represents a registered state element,
 return the output `ValueExpr` and `HWType` corresponding to `o` in the following (where <<>> indicates lean and the rest is SystemVerilog):
 ```systemverilog
@@ -281,7 +304,7 @@ always_ff @(posedge clk)
 partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
   let (fn, args) := e.getAppFnArgs
   if fn != ``Mealy.scan then panic! "HDLean Internal Error: fn not Mealy.scan"
-  let invalidNumArgs := fun () => m!"Invalid number of arguments ({args.size}) for {fn}"
+  let invalidNumArgs := fun () => invalidNumArgs args fn
   let #[α,β,σ,s,f,reset] := args | throwError invalidNumArgs ()
   trace[debug] "α={α},β={β},σ={σ},s={s},f={f},reset={reset}"
   trace[debug] "s={s},f={f},reset={reset}"
@@ -335,7 +358,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     | .none => throwError "Unknown free variable: {fvarId}"
   | .app .. | .const .. =>
     let (fn, args) := e.getAppFnArgs
-    let invalidNumArgs := fun () => m!"Invalid number of arguments ({args.size}) for {fn}"
+    let invalidNumArgs := fun () => invalidNumArgs args fn
     let fn := if let .some fn := ← HWImplementedBy? e.getAppFn then fn else fn
     if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}"
     match fn with
@@ -874,6 +897,14 @@ def delay4_mono := delay4 (α:=BitVec 3) (cyclic_fibonacci_series)
 
 open NotSynthesizable in
 #eval! simulate (delayN 3 (α:=BitVec 14) cyclic_fibonacci_series) (Array.replicate 20 (cast sorry ())) |>.take 20 |>.map fun x => x.fst.value |> ToString.toString
--- TODO, reduce using `Hdlean.Meta.whnfEvalEta` so it uses _unsafe.rec in order to get stuff like delay4_mono.σ to actually evaluate instead of getting stuck in `Acc.rec` madness.
+
+def mkVec : Vector (BitVec 3) 3 := #v[1,2].push 3
+#check Vector.mk
+#eval do println! ← emit (``mkVec)
+def mkVec' (last: BitVec 3): Vector (BitVec 3) 3 := #v[1,2].push last
+#eval do println! ← emit (``mkVec')
+def mkVec'' (el: BitVec 3): Vector (BitVec 3 ⊕ BitVec 10) 2 := #v[.inl 1,.inr 2].set 0 (.inl el)
+#eval do println! ← emit (``mkVec'')
+
 
 end Hdlean.Compiler
