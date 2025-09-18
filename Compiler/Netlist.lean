@@ -454,4 +454,7 @@ def Module.emit (self:Module): Std.Format :=
 --   :Module
 -- }.emit
 
+def ResetHWType: HWType := {width := 1}
+def ClockHWType: HWType := {width := 1}
+
 end SystemVerilog

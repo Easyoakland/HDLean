@@ -262,6 +262,11 @@ partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
   | (.const ``instDecidableLtBitVec []) => .some ``instDecidableLtBitVecHW
   | _ => .none
 
+partial def resetName := `rst
+partial def clockName := `clk
+partial def activeLowResetValue := compileValue (mkNatLit 0)
+partial def activeHighResetValue := compileValue (mkNatLit 1)
+
 /-- Given an expression `Mealy.scan s f reset` which represents a registered state element,
 return the output `ValueExpr` and `HWType` corresponding to `o` in the following (where <<>> indicates lean and the rest is SystemVerilog):
 ```systemverilog
@@ -292,11 +297,9 @@ partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
   addItem <| .var { name := outputName, type := βHWType }
   let resetValue ← compileValue reset
   let sValue ← compileValue s
-  -- TODO handle reset value with initial block.
-  -- TODO decide how to do resets and clock passing.
-  -- TODO use resetValue when doing reset.
+  -- TODO use reset value in initial block.
   trace[debug] "resetValue: {resetValue}"
-  -- TODO combine `withLocalDeclD` with modifying `CompileContext` instad of manually doing both.
+  -- TODO combine `withLocalDeclD` with modifying `CompileContext` instead of manually doing both.
   withLocalDeclD `s (← inferType s) fun sFVar => do
   withLocalDeclD `state (← inferType reset) fun stateFVar => do
   withReader (fun ctx => {ctx with env := (
@@ -308,12 +311,16 @@ partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
     addItem <| .assignment
       (.concatenation [.identifier outputName, .identifier newStateName])
       (appliedF)
-    addItem <| .alwaysClocked .posedge `clk [
-      Stmt.assignment .nonblocking (.identifier stateName) (.identifier newStateName)
+    addItem <| .alwaysClocked .posedge clockName [
+      Stmt.conditionalAssignment .nonblocking
+        (.identifier stateName) σHWType
+        (.identifier resetName) ResetHWType
+        [(← activeLowResetValue, resetValue)] -- TODO this is only active low, haven't yet implemented customization change based on domain.
+        (.some (.identifier newStateName))
     ]
-    pure ()
   return (.identifier outputName, βHWType)
 
+-- TODO: Return `BitShape` or `HWType` of returned `ValueExpr` and use that instead of doing `inferType` since `inferType` is the wrong thing to use when encountering `Mealy α`. Alternative (maybe uglier?) solution is to write custom `HWInferType` or `HWBitShape?`.
 partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   trace[hdlean.compiler.compileValue] "compiling value: {e}"
   let e ← whnfEvalEta e
@@ -425,7 +432,7 @@ partial def compileFun (fn: Expr): CompilerM Module := do
 args = {args}
 body = {body}"
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
-  let compiledBody? ← if !(← forallIsSynthesizable (← inferType body)) then
+  let (hasClkRst, compiledBody?) ← if !(← forallIsSynthesizable (← inferType body)) then
     let err := fun () => m!"Unsynthesizable function body is not unfoldable:"
       ++ MessageData.nestD m!"{Std.Format.line}{body},{Std.Format.line}args={args}"
     match ← withDenylist denylist (unfoldDefinitionEval? body) with
@@ -440,16 +447,27 @@ body = {body}"
         return ← compileFun <| ← whnfEvalEta <| ← mkAppM ``Mealy.value #[body]
       else if body.getAppFn.constName? == ``Mealy.scan then
         let compiledBody ← compileMealyScan body
-        pure <| Option.some compiledBody
+        pure <| (true, Option.some compiledBody)
       else
         throwError err ()
-    else pure Option.none
+    else pure (false, Option.none)
   let retHWType ← match compiledBody? with
   | .none => getHWType (← bitShape! (← Meta.returnTypeV body args))
   | .some (_, compiledBodyHWType) => pure compiledBodyHWType
-  -- Convert function arguments to module ports.
   let mut parameters := #[]
   let mut ports := #[]
+  -- Add clock and reset signals if needed.
+  if hasClkRst then
+    ports := ports.push {
+      name := clockName
+      type := ClockHWType
+      direction := .input
+    } |>.push {
+      name := resetName
+      type := ResetHWType
+      direction := .input
+    }
+  -- Convert function arguments to module ports.
   for arg in args do
     let argType ← inferType arg
     let .some argShape ← bitShape? argType | throwError "Argument is unsynthesizable: {arg}"
