@@ -197,6 +197,12 @@ def SpaceExpr.emit: SpaceExpr → Option String
 
 -- #eval SpaceExpr.concatenation [SpaceExpr.identifier `a, .identifier `b |> (SpaceExpr.bitSelect . [1:3])] |>.emit |>.get!
 
+mutual
+inductive DynamicBitSlice where
+  /-- Slice from `start` of `len` elements, where each element has size `scale`. -/
+  | slice (start : ValueExpr) (len : Nat) (scale : Nat)
+  deriving Repr, BEq, Hashable
+
 /-- Value producer. Expression which represents a source of a piece of data. -/
 inductive ValueExpr where
   | identifier (name : Identifier)
@@ -204,20 +210,28 @@ inductive ValueExpr where
   | binaryOp (op : BinOp) (left : ValueExpr) (right : ValueExpr)
   | unaryOp (op : UnOp) (operand : ValueExpr)
   | bitSelect (base : ValueExpr) (index : BitSlice)
+  | dynamicBitSelect (base : ValueExpr) (index : DynamicBitSlice)
   /-- Stored from most to least significant order. -/
   | concatenation (parts : List ValueExpr)
   deriving Repr, BEq, Hashable, Inhabited
+end
 
 def undefinedValue: ValueExpr := .literal "'x"
 
-def ValueExpr.emit: ValueExpr → Option String
-  | identifier name => name.emit
-  | literal val => .some val
-  | binaryOp op l r => do s!"({← l.emit} {op.emit} {← r.emit})"
-  | unaryOp op x => do s!"({op.emit}{← x.emit})"
-  | bitSelect b i => do s!"{← b.emit}{← i.emit}"
-  | concatenation xs => do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR ", " |>.foldl String.append "") ++ "}"
+mutual
+def DynamicBitSlice.emit (self:DynamicBitSlice): Option String :=
+  match self with
+  | .slice start len scale => if len == 0 || scale == 0 then .none else do pure s!"[{scale}*({← start.emit})+:{scale}*{len}]"
 
+def ValueExpr.emit: ValueExpr → Option String
+  | .identifier name => name.emit
+  | .literal val => .some val
+  | .binaryOp op l r => do s!"({← l.emit} {op.emit} {← r.emit})"
+  | .unaryOp op x => do s!"({op.emit}{← x.emit})"
+  | .bitSelect b i => do s!"{← b.emit}{← i.emit}"
+  | .dynamicBitSelect b i => do s!"{← b.emit}{← i.emit}"
+  | .concatenation xs => do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR ", " |>.foldl String.append "") ++ "}"
+end
 -- #eval println! ValueExpr.binaryOp .add (ValueExpr.concatenation [ValueExpr.identifier `a, .identifier `b, .literal "'b101"]) (ValueExpr.unaryOp (.not) (ValueExpr.identifier `c)) |>.emit
 
 end BaseTypes
