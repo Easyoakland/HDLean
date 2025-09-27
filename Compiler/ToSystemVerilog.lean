@@ -130,7 +130,7 @@ field: {fieldIdx}"
     start := start + fieldShapes[i]!.totalWidth
   let width := fieldShapes[fieldIdx]!.totalWidth
   let name ← mkFreshUserName (.num (ctorVal.name ++ `field) fieldIdx)
-  let fieldShape ← bitShape! fieldType
+  let .some fieldShape ← bitShape? fieldType | throwError "field type has unknown bit shape: {fieldType}"
   addItem <| .var {name, type := ← getHWType fieldShape}
   addItem <| .assignment (.identifier name) (.bitSelect constructedVal [start:start+width])
   return .identifier name
@@ -211,7 +211,8 @@ extra args = {args[recursor.getMajorIdx+1:]}"
     return (tagVal, result)
   trace[hdlean.compiler.compileRecursor] "compiled {minors.size} ctor cases"
   let recRes ← mkFreshUserName (recursor.getMajorInduct ++ `recRes |>.str ((ToString.toString retType).takeWhile fun c => !c.isWhitespace))
-  let retHWType ← getHWType (← bitShape! retType)
+  let .some retType ← bitShape? retType | throwError "return type unknown bit shape: {retType}"
+  let retHWType ← getHWType retType
   addItem <| .var { name := recRes, type := retHWType }
   match minors.size with
   | 0 => addItem <| ModuleItem.assignment (.identifier recRes) undefinedValue
@@ -257,7 +258,7 @@ partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Arr
   trace[hdlean.compiler.compileCtor] "params = {params}"
   trace[hdlean.compiler.compileCtor] "fields = {fields}"
   let inductType := mkAppN (.const ctor.induct levels) params
-  let shape ← bitShape! inductType
+  let .some shape ← bitShape? inductType | throwError "inductive type has unknown bit shape: {inductType}"
   let tagWidth := shape.tagBits
   let fieldShapes ← match shape with
     | .union variants =>
@@ -314,8 +315,8 @@ partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
   let stateName ← mkFreshUserName `registerState
   let newStateName ← mkFreshUserName `newRegisterState
   let outputName ← mkFreshUserName `registerOutput
-  let .some σShape ← bitShape? σ | throwError dbg! "TODO"
-  let .some βShape ← bitShape? β | throwError dbg! "TODO"
+  let .some σShape ← bitShape? σ | throwError "σ has unknown bit shape: {σ}"
+  let .some βShape ← bitShape? β | throwError "β has unknown bit shape: {β}"
   let σHWType ← getHWType σShape
   let βHWType ← getHWType βShape
   addItem <| .var { name := stateName, type := σHWType }
@@ -428,7 +429,7 @@ partial def compileAssignment (space : SpaceExpr) (e : Expr) : CompilerM Unit :=
   | .letE _ _ value body _ => do
       let valueVal ← compileValue value
       let valueType ← inferType value
-      let valueShape ← bitShape! valueType
+      let .some valueShape ← bitShape? valueType | throwError "value has unknown bit shape: {valueType}"
       let name ← mkFreshUserName `let
       addItem <| .var { name, type := ← getHWType valueShape }
       addItem <| .assignment (.identifier name) valueVal
@@ -478,7 +479,10 @@ body = {body}"
         throwError err ()
     else pure (false, Option.none)
   let retHWType ← match compiledBody? with
-  | .none => getHWType (← bitShape! (← Meta.returnTypeV body args))
+  | .none =>
+    let retTy ← Meta.returnTypeV body args
+    let .some shape ← bitShape? retTy | throwError "return type unknown bit shape {retTy}"
+    getHWType shape
   | .some (_, compiledBodyHWType) => pure compiledBodyHWType
   let mut parameters := #[]
   let mut ports := #[]

@@ -171,7 +171,5 @@ end
 
 /-- ≈ `bitShape.run` -/
 def bitShape? := fun e => (bitShape e).run
-/-- ≈ `bitShape?.get!` -/
-def bitShape! := fun e => ((·.get!) <$> bitShape e).run
 
 end BitShape
