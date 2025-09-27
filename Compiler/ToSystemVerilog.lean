@@ -294,6 +294,13 @@ partial def activeHighResetValue := compileValue (mkNatLit 1)
 
 partial def invalidNumArgs (args: Array α) (fn: Name): MessageData := m!"Invalid number of arguments ({args.size}) for {fn}"
 
+/-- Given a type of `Mealy α`, return `α` -/
+partial def unwrapMealyType (e:Expr): CompilerM Expr := do
+  let (fn, args) := e.getAppFnArgs
+  let #[α] := args | throwError invalidNumArgs args fn
+  return α
+
+
 /-- Given an expression `Mealy.scan s f reset` which represents a registered state element,
 return the output `ValueExpr` and `HWType` corresponding to `o` in the following (where <<>> indicates lean and the rest is SystemVerilog):
 ```systemverilog
@@ -307,10 +314,10 @@ always_ff @(posedge clk)
 -/
 partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
   let (fn, args) := e.getAppFnArgs
-  if fn != ``Mealy.scan then panic! "HDLean Internal Error: fn not Mealy.scan"
+  if fn != ``Mealy.scan then throwError "HDLean Internal Error: fn not Mealy.scan"
   let invalidNumArgs := fun () => invalidNumArgs args fn
   let #[α,β,σ,s,f,reset] := args | throwError invalidNumArgs ()
-  trace[debug] "α={α},β={β},σ={σ},s={s},f={f},reset={reset}"
+  trace[hdlean.compiler.compileMealyScan] "compiling mealy scan{Format.line}α={α},{Format.line}β={β},{Format.line}σ={σ},{Format.line}s={s},{Format.line}f={f},{Format.line}reset={reset}"
   trace[debug] "s={s},f={f},reset={reset}"
   let stateName ← mkFreshUserName `registerState
   let newStateName ← mkFreshUserName `newRegisterState
@@ -322,18 +329,20 @@ partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
   addItem <| .var { name := stateName, type := σHWType }
   addItem <| .var { name := newStateName, type := σHWType }
   addItem <| .var { name := outputName, type := βHWType }
+  trace[hdlean.compiler.compileMealyScan] "compiling reset value"
   let resetValue ← compileValue reset
+  trace[hdlean.compiler.compileMealyScan] "compiling scan input"
   let sValue ← compileValue s
   -- TODO use reset value in initial block.
-  trace[debug] "resetValue: {resetValue}"
   -- TODO combine `withLocalDeclD` with modifying `CompileContext` instead of manually doing both.
-  withLocalDeclD `s (← inferType s) fun sFVar => do
+  withLocalDeclD `s (← unwrapMealyType <| ← inferType s) fun sFVar => do
   withLocalDeclD `state (← inferType reset) fun stateFVar => do
   withReader (fun ctx => {ctx with env := (
     ctx.env
       |>.insert sFVar.fvarId! sValue
       |>.insert stateFVar.fvarId! (.identifier stateName)
   )}) do
+    trace[hdlean.compiler.compileMealyScan] "compiling scan function"
     let appliedF ← compileValue (mkApp2 f sFVar stateFVar)
     addItem <| .assignment
       (.concatenation [.identifier outputName, .identifier newStateName])
