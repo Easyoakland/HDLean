@@ -230,7 +230,7 @@ def ValueExpr.emit: ValueExpr → Option String
   | .unaryOp op x => do s!"({op.emit}{← x.emit})"
   | .bitSelect b i => do s!"{← b.emit}{← i.emit}"
   | .dynamicBitSelect b i => do s!"{← b.emit}{← i.emit}"
-  | .concatenation xs => do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR ", " |>.foldl String.append "") ++ "}"
+  | .concatenation xs => if xs.length = 0 then .none else do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR ", " |>.foldl String.append "") ++ "}"
 end
 -- #eval println! ValueExpr.binaryOp .add (ValueExpr.concatenation [ValueExpr.identifier `a, .identifier `b, .literal "'b101"]) (ValueExpr.unaryOp (.not) (ValueExpr.identifier `c)) |>.emit
 
