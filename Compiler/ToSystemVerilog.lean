@@ -109,6 +109,9 @@ v.y
 ```
 -/
 def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctorVal : ConstructorVal) (fieldIdx:Nat) (fieldType:Expr) : CompilerM ValueExpr := do
+  trace[hdlean.compiler.compileFieldProj] "compiling field projection:{Format.line}\
+of: {constructedVal}{Format.line}\
+field: {fieldIdx}"
   let .some shape ← bitShape? constructedValType | throwError "HDLean Internal Error: field projection of type without bitShape: {constructedValType}"
   if let .union #[] := shape then return ValueExpr.literal "/*ZST*/"
   let (tagWidth, fieldShapes) ← do

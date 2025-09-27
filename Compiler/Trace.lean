@@ -10,6 +10,7 @@ initialize
   Lean.registerTraceClass `hdlean.compiler.compileCtor (inherited:=true)
   Lean.registerTraceClass `hdlean.compiler.compileValue (inherited:=true)
   Lean.registerTraceClass `hdlean.compiler.compileFun (inherited:=true)
+  Lean.registerTraceClass `hdlean.compiler.compileFieldProj (inherited:=true)
 
 -- register_option trace.hdlean.compiler : Bool := {
 --   defValue := Bool.true
