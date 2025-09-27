@@ -510,9 +510,11 @@ body = {body}"
       let name := ← arg.fvarId!.getUserName
       return map.insert arg.fvarId! (.identifier name)
   }
-  match compiledBody? with
-  | .none => withReader (fun _ => ctx) <| compileAssignment (.identifier `o) body
-  | .some (compiledBodyValue, _) => addItem <| .assignment (.identifier `o) compiledBodyValue
+  -- Assign to output (if type has nonzero size).
+  if retHWType.width != 0 then
+    match compiledBody? with
+    | .none => withReader (fun _ => ctx) <| compileAssignment (.identifier `o) body
+    | .some (compiledBodyValue, _) => addItem <| .assignment (.identifier `o) compiledBodyValue
   -- Save the module to the CompileM state of modules to emit and return it.
   let name ← mkFreshUserName `mod
   let mod := { name, parameters, ports, items := (←get).items }
