@@ -53,6 +53,8 @@ def denylist: NameSet := (NameSet.empty
   |>.insert ``BitVec.ult
   |>.insert ``BitVec.ule
   |>.insert ``BitVec.decEq
+  |>.insert ``Vector.get
+  |>.insert ``Vector.extract
   |>.insert ``Mealy.pure
   |>.insert ``Mealy.scan
   -- |>.insert ``instLTBitVec
@@ -382,7 +384,8 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     | ``Fin.mk =>
       let #[n, val, _isLt] := args | throwError invalidNumArgs ()
       let val ← compileValue val
-      let n ← unsafe Meta.evalExpr Nat (.const ``Nat {}) n
+      let n ← try unsafe Meta.evalExpr Nat (.const ``Nat {}) n
+        catch e => throwError "Can't compile Fin.mk: can't evaluate upper bound = '{n}': {e.toMessageData}"
       let lit := match val.emit with |.none => "" |.some val => s!"{n.ceilLog2}'{val}" -- Add width annotation
       return .literal lit
     | ``BitVec.mul =>
@@ -415,6 +418,25 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .eq x y
+    | ``Vector.get =>
+      let #[α, _n, xs, i] := args | throwError invalidNumArgs ()
+      let xs ← compileValue xs
+      let i ← compileValue i
+      let .some αShape ← bitShape? α | throwError "Vector type has unknown bit shape: {α}"
+      let αWidth := αShape.totalWidth
+      return .dynamicBitSelect xs (.slice (start:=i) (len:=1) (scale:=αWidth))
+    | ``Vector.extract =>
+      let #[α, n, xs, start, stop] := args | throwError invalidNumArgs ()
+      let n ← try unsafe Meta.evalExpr Nat (.const ``Nat {}) n
+        catch e => throwError "Can't compile Vector.extract: can't evaluate vector length = '{n}': {e.toMessageData}"
+      let start ← try unsafe Meta.evalExpr Nat (.const ``Nat {}) start
+        catch e => throwError "Can't compile Vector.extract: can't evaluate argument 'start' = '{start}': {e.toMessageData}"
+      let stop ← try pure <| (← unsafe Meta.evalExpr Nat (.const ``Nat {}) stop).min n
+        catch e => throwError "Can't compile Vector.extract: can't evaluate argument 'stop' = '{stop}': {e.toMessageData}"
+      if start ≥ stop then return .zst
+      let .some αShape ← bitShape? α | throwError "Vector type has unknown bit shape: {α}"
+      let αWidth := αShape.totalWidth
+      return .bitSelect (← compileValue xs) [start*αWidth:stop*αWidth]
     | ``Mealy.pure =>
       let #[_α, a] := args | throwError invalidNumArgs ()
       -- `Mealy.pure` is treated transparently.
@@ -427,7 +449,10 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       | .ctorInfo val => compileCtor val e.getAppFn.constLevels! args
       | _ => throwError "Unsupported function application: {e}"
   | .lit e => return .literal <| match e with |.natVal n => s!"{n}" |.strVal s => s
-  | .proj typeName idx s => compileExprProj typeName idx s
+  | .proj typeName idx s =>
+    match typeName, idx with
+    | ``Fin, 0 => compileValue s
+    | _, _ => compileExprProj typeName idx s
   | _ => throwError "Unsupported expression: {e}"
 end
 
@@ -926,6 +951,28 @@ def mkVec' (last: BitVec 3): Vector (BitVec 3) 3 := #v[1,2].push last
 #eval do println! ← emit (``mkVec')
 def mkVec'' (el: BitVec 3): Vector (BitVec 3 ⊕ BitVec 10) 2 := #v[.inl 1,.inr 2].set 0 (.inl el)
 #eval do println! ← emit (``mkVec'')
+
+def indexVec (vec: Vector (BitVec 4) 3): BitVec 4 :=
+  vec[1]
+def indexVec' (vec: Vector (BitVec 4) 3) (idx: Fin 3): BitVec 4 :=
+  vec[idx]
+def indexVec'' (vec: Vector (BitVec 4) 3) (fake_idx: Fin 3) (fake_idx2: Fin 3) :=
+  vec.extract 1 3
+def indexVec''' (vec: Vector (BitVec 4) 3) (fake_idx: Fin 3) (h:fake_idx.1 = 0) (fake_idx2: Fin 3) (h2:fake_idx2.1 = 3) : Vector (BitVec 4) 3 :=
+  let ret := vec.extract fake_idx.1 fake_idx2.1
+  by
+    rw [h,h2] at ret
+    -- exact vec.extract 0 3
+    exact ret
+#eval do println! ← emit (``indexVec)
+#print indexVec'
+set_option trace.hdlean.compiler true in
+set_option trace.debug true in
+#eval do println! ← emit (``indexVec')
+set_option trace.hdlean.compiler true in
+#eval do println! ← emit (``indexVec'')
+#eval do println! ← emit (``indexVec''')
+#eval indexVec'' #v[1,2,3] 1 2
 
 
 end Hdlean.Compiler
