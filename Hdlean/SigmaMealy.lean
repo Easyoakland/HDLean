@@ -604,3 +604,19 @@ end
 
 #reduce (types:=true) ((↑adder:MealyA (Nat×Nat) Nat).σ)
 #eval do println! ← Lean.Meta.reduce (skipTypes := false) <| ←Lean.Elab.Term.elabTerm (←`((↑adder:MealyA (Nat×Nat) Nat).σ)) .none
+
+open NotSynthesizable in
+/--
+Mealy machines s₁ and s₂ are defined to be bisimulations if their current values are equal and tails are bisimulations.
+
+See <https://leanprover-community.github.io/mathlib4_docs/Mathlib/Data/Stream/Init.html#Stream'.IsBisimulation>
+-/
+def Mealy.IsBisimulation (a b : Mealy α) (R : (a:Mealy α) → (b:Mealy α) → (a.I = Unit ∧ b.I = Unit) → Prop) (h: a.I = Unit ∧ b.I = Unit): Prop :=
+  a.value = b.value
+    ∧ R (a.next (cast h.left.symm ())) (b.next (cast h.right.symm ())) h
+
+/- def Mealy.EqualNow (a b : Mealy α) (h: a.I = Unit ∧ b.I = Unit) : Prop :=
+  a.value = b.value
+
+#check Quot.mk SignalRel
+ -/
