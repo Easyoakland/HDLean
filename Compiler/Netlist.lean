@@ -216,6 +216,9 @@ inductive ValueExpr where
   deriving Repr, BEq, Hashable, Inhabited
 end
 
+/-- The canonical way to represent a zero-sized `ValueExpr` -/
+def ValueExpr.zst: ValueExpr := .concatenation []
+
 def undefinedValue: ValueExpr := .literal "'x"
 
 mutual

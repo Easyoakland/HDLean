@@ -533,7 +533,7 @@ body = {body}"
     | .none => withReader (fun _ => ctx) <| compileAssignment (.identifier `o) body
     | .some (compiledBodyValue, _) => addItem <| .assignment (.identifier `o) compiledBodyValue
   else
-    addItem <| .assignment (.identifier `o) (.concatenation [])
+    addItem <| .assignment (.identifier `o) (.zst)
   -- Save the module to the CompileM state of modules to emit and return it.
   let name ← mkFreshUserName `mod
   let mod := { name, parameters, ports, items := (←get).items }
