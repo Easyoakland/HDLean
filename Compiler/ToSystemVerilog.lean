@@ -469,11 +469,12 @@ args = {args}
 body = {body}"
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
   let (hasClkRst, compiledBody?) ← if !(← forallIsSynthesizable (← inferType body)) then
-    let err := fun () => m!"Unsynthesizable function body is not unfoldable:"
-      ++ MessageData.nestD m!"{Std.Format.line}{body},{Std.Format.line}args={args}"
-    match ← withDenylist denylist (unfoldDefinitionEval? body) with
+    let err := fun () body => m!"Function has an unsynthesizable interface (unsynthesizable argument or return type) and this can't be avoided by unfolding the function body:"
+      ++ MessageData.nestD m!"{Std.Format.line}body={body},{Std.Format.line}args={args}"
+    let body' ← whnfEvalEta body
+    match ← withDenylist denylist (unfoldDefinitionEval? body') with
     | .some body' =>
-      if body' == body then throwError err ()
+      if body' == body then throwError err () body'
       return ← compileFun (← mkLambdaFVars args body')
     | .none =>
       -- TODO this is probably wrong. e.g. `Mealy (Mealy BitVec 3)`, should not be synthesizable.
@@ -485,7 +486,7 @@ body = {body}"
         let compiledBody ← compileMealyScan body
         pure <| (true, Option.some compiledBody)
       else
-        throwError err ()
+        throwError err () body'
     else pure (false, Option.none)
   let retHWType ← match compiledBody? with
   | .none =>
