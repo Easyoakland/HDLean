@@ -495,7 +495,7 @@ args = {args}
 body = {body}"
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
   let (hasClkRst, compiledBody?) ← if !(← forallIsSynthesizable (← inferType body)) then
-    let err := fun () body => m!"Function has an unsynthesizable interface (unsynthesizable argument or return type) and this can't be avoided by unfolding the function body:"
+    let err := fun () body => m!"Function has an unsynthesizable interface (unsynthesizable argument or return type) and this can't be resolved by unfolding the function body:"
       ++ MessageData.nestD m!"{Std.Format.line}body={body},{Std.Format.line}args={args}"
     let body' ← whnfEvalEta body
     match ← withDenylist denylist (unfoldDefinitionEval? body') with
