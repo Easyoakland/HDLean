@@ -4,6 +4,67 @@ import Lean
 
 namespace Hdlean
 
+inductive ActiveEdge where
+  | rising
+  | falling
+  deriving Inhabited
+
+inductive ResetEdge where
+  /-- async assert sync de-assert -/
+  | asynchronous
+  /-- sync assert sync de-assert -/
+  | synchronous
+  deriving Inhabited
+
+inductive InitBehavior where
+  | unknown
+  | defined
+  deriving Inhabited
+
+inductive ResetPolarity where
+  | activeHigh
+  | activeLow
+  deriving Inhabited
+
+structure Domain where
+  freq : {n:Nat//n≠0}
+  activeEdge : ActiveEdge
+  resetEdge : ResetEdge
+  initBehavior : InitBehavior
+  resetPolarity : ResetPolarity
+
+instance : Inhabited Domain where
+  default := {
+    freq := ⟨10_000_000, Ne.symm (Nat.zero_ne_add_one _)⟩,
+    activeEdge:=default,
+    resetEdge:=default,
+    initBehavior:=default,
+    resetPolarity:=default
+  }
+
+/- - This might be more performant when running `simulate` in `Lean` if Lean has trouble optimizing `dom` parameters away.
+section IndirectDomain
+
+class HasDomain (t:Type u) where
+  dom : Domain
+structure System
+instance : HasDomain System where
+  dom := {
+    freq := ⟨100_000_000, by omega⟩,
+    activeEdge := .rising,
+    resetEdge := .asynchronous,
+    initBehavior := .defined,
+    resetPolarity := .activeHigh
+  }
+structure Signal' (dom : Type u) (O : Type u)
+def freq (dom) [HasDomain dom]: Nat := HasDomain.dom dom |>.freq
+#eval freq System
+
+set_option trace.compiler.ir true in
+def signal_freq [HasDomain dom] (s:Signal' dom O): Nat := HasDomain.dom dom |>.freq
+#eval (signal_freq .mk (dom:=System) (O:=BitVec 3))
+end IndirectDomain -/
+
 /-- Mealy machine with inputs of `Mealy.I` and outputs of `O` with state `Mealy.σ` -/
 structure Mealy (O : Type u) where
   σ : Type u
@@ -17,6 +78,9 @@ structure Mealy (O : Type u) where
   transition : I → σ → O × σ
 
 attribute [inline] Mealy.transition -- TODO I don't think this does anything
+
+set_option linter.unusedVariables false in
+def Signal (dom : Domain) O := Mealy O
 
 open Std.Format in
 /-- Format the `Mealy` without formatting its internal state. -/
