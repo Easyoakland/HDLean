@@ -70,6 +70,7 @@ def whnfEvalEta (e:Expr): MetaM Expr := @Hdlean.Meta.whnfEvalEta denylist e
 def unfoldDefinitionEval? := fun body => withDenylist denylist (Hdlean.Meta.unfoldDefinitionEval? body)
 
 /-- A function is synthesizable if all arguments and the return type are synthesizable. This means that they either can be erased (`Sort _`) or have a known unboxed size. This also works for a function with 0 args (a type). -/
+-- TODO, this should take a flag for if unwrapping Mealy when checking synthesizable. Then we have `synthesizable α (mealy:=false) → synthesizable (Mealy α) (mealy:=true)`. This enables saying `α → Mealy β` is synthesizable (if `α` and `β` are), but `α → Mealy (Mealy β)` is not. Maybe call it `time_dim` where `time_dim` starts at `1` since we have `1` dimension of time and then inside a `Mealy` the time_dim goes to `0`, since we have no time dimension left? Then everything is implicitly constant across remaining unspecified time dimensions.
 def forallIsSynthesizable (type:Expr): MetaM Bool := forallTelescope type fun args body => do
   let is_synthesizable (type:Expr): MetaM Bool := do
     -- If has unboxed size then it can be represented with that size in synthesis.
@@ -943,6 +944,51 @@ def delay4_mono := delay4 (α:=BitVec 3) (cyclic_fibonacci_series)
 
 open NotSynthesizable in
 #eval! simulate (delayN 3 (α:=BitVec 14) cyclic_fibonacci_series) (Array.replicate 20 (cast sorry ())) |>.take 20 |>.map fun x => x.fst.value |> ToString.toString
+-- TODO, make a `reduce` function using `Hdlean.Meta.whnfEvalEta` so it uses `._unsafe.rec` in order to get stuff like `delay4_mono.σ` to actually evaluate instead of getting stuck in `Acc.rec` madness.
+
+#check Mealy.scan
+def feedback (s:Mealy (σ → β × σ)) (reset:σ) : Mealy β :=
+  s.scan (reset:=reset) fun f st => f st
+
+unsafe def lut_mealy (vals: Array α) [Inhabited α]: Mealy α :=
+  Mealy.pure () |>.scan fun () (st:BitVec vals.size) =>
+    let rec lookup (w: Nat) (n:BitVec w) (vals:Array α) (h: n < vals.size): α :=
+      if h: n = 0 then match vals.back? with
+        | .none => vals.back!
+        | .some x => x
+      else
+        have : n ≠ 0 := h
+        have : 0 < vals.size := by sorry
+        have : 1 ≤ n := by sorry --bv_omega
+        let n' := n-1
+        have : n' < n := by sorry --bv_omega
+        have := by calc
+          0 < n := by bv_decide
+          n < vals.size := by bv_decide
+        lookup w n' vals.pop (by subst n'; simp [*]; admit)
+    let v := lookup vals.size 3 vals sorry
+    (v, st+1)
+
+#eval 1#3 < 2#3
+#eval (1#3-1) < (2#3-1)
+#eval (0#3-1) < (1#3-1)
+
+open NotSynthesizable in
+#eval! simulate (lut_mealy #[1,2,3,4]) (Array.replicate 20 ()) |>.map fun x => x.fst.value
+unsafe def lut_mealy_mono := lut_mealy #[(1:BitVec 3),2,3,4]
+set_option trace.hdlean.compiler true in
+set_option trace.Meta.whnf true in
+set_option maxHeartbeats 1000 in
+-- This won't work until BitVec arithmetic like functions (in this case sub and eq) reduce when fully-applied without free/meta vars even if in the denylist. Because they aren't unfolded this compiles both halves of the if statement forever when it should actually simplify to the recursive half repeatedly with the non-recursive half at the end. It should be able to unfold at compile time since `n` is known at compile time and `n-1` and `n=0` control if the function recurses at all.
+#eval do println! ← emit (``lut_mealy_mono)
+
+def mealy_match (lut: Array (BitVec 3)): Mealy (BitVec 3) :=
+  Mealy.pure () |>.scan fun
+    | s, Bool.false => if h:s = () then (lut.back!, true) else by contradiction
+    | (), b@Bool.true => (lut[0]!, not b)
+def mealy_match_mono := mealy_match #[1,2,3,4]
+set_option trace.hdlean.compiler true in
+#eval do println! ← emit (``mealy_match_mono)
 
 def mkVec : Vector (BitVec 3) 3 := #v[1,2].push 3
 #check Vector.mk
@@ -974,5 +1020,29 @@ set_option trace.hdlean.compiler true in
 #eval do println! ← emit (``indexVec''')
 #eval indexVec'' #v[1,2,3] 1 2
 
+def func_on_mealy (s:Mealy Bool): (Mealy Bool):= s.scan fun i st => (i, ())
+def use_func_on_mealy : (Mealy Bool):= func_on_mealy (Mealy.pure true |>.scan fun i (st:Bool) => if st then (i,not st) else (not i, not st))
+
+#eval do println! ← emit (``func_on_mealy)
+#eval do println! ← emit (``use_func_on_mealy)
+
+def conditional_func (b:Bool): Bool → Bool:= match b with
+| .true => id
+| .false => not
+#print conditional_func
+#print conditional_func.match_1
+
+def use_conditional_func (s:Mealy Bool): Mealy (Bool) := s.scan fun i (st:Bool) => match st with
+| .false => (conditional_func false i, not st)
+| .true => (conditional_func true i, not st)
+
+#eval do println! ← emit (``conditional_func)
+#eval do println! ← emit (``use_conditional_func)
+def conditional_func' (_b:Bool) (_i: Bool): Bool := true
+def use_conditional_func' (s:Mealy Bool): Mealy (Bool) := s.scan fun i (st:Bool) => match st with
+| .false => (conditional_func' false i, not st)
+| .true => (conditional_func' true i, not st)
+set_option trace.hdlean.compiler true in
+#eval do println! ← emit (``use_conditional_func')
 
 end Hdlean.Compiler
