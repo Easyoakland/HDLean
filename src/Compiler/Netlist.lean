@@ -203,7 +203,7 @@ inductive SpaceExpr : Type where
 def SpaceExpr.emit: SpaceExpr → Option String
   | identifier id => id.emit
   | bitSelect id bs => do s!"{← id.emit}{← bs.emit}"
-  | concatenation spaces => do return "{" ++ ((←spaces.mapM (·.emit)).intersperseTR ", " |>.foldl (init:="") String.append) ++ "}"
+  | concatenation spaces => if spaces.length = 0 then .none else do return "{" ++ ((←spaces.mapM (·.emit)).intersperseTR ", " |>.foldl (init:="") String.append) ++ "}"
 
 -- #eval SpaceExpr.concatenation [SpaceExpr.identifier `a, .identifier `b |> (SpaceExpr.bitSelect . [1:3])] |>.emit |>.get!
 
