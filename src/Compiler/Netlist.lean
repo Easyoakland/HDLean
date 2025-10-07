@@ -315,7 +315,6 @@ def Stmt.emit : Stmt → Option Std.Format
     let cases := cases.map (joinSep · line)
     let default := default.bind (do s!"default: {space_emit} {assign.emit} {← ·.emit};")
     if cases.isNone && default.isNone then return panic! "space non-ZST but no cases or default"
-
     s!"case ({← scrutinee.emit})" ++ nest (1*tabwidth) (
       line ++ cases.getD "/* no case */"
       ++ line ++ default.getD "/* no default */"

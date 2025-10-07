@@ -145,7 +145,7 @@ def compileFieldProj (constructedVal:ValueExpr) (constructedValType: Expr) (ctor
 of: {constructedVal}{Format.line}\
 field: {fieldIdx}"
   let .some shape ← bitShape? constructedValType | throwError "HDLean Internal Error: field projection of type without bitShape: {constructedValType}"
-  if let .union #[] := shape then return ValueExpr.literal "/*ZST*/"
+  if let .union #[] := shape then return .zst
   let (tagWidth, fieldShapes) ← do
     match shape with
     | .union variants =>
@@ -198,7 +198,8 @@ extra args = {args[recursor.getMajorIdx+1:]}"
   -- If the type depends on the major premise's values this will fail, otherwise whnf will simplify to the monomorphic type. The `+1` is for the major argument.
   let retType ← whnfEvalEta <| mkAppN motive args[recursor.getFirstIndexIdx:recursor.getFirstIndexIdx+recursor.numIndices+1]
   trace[hdlean.compiler.compileRecursor] "retType = {retType}"
-  if retType.isProp then return ValueExpr.literal "/*ZST: rec eliminates to Prop */"
+  -- ZST: rec eliminates to Prop
+  if retType.isProp then return .zst
   let minors := args[recursor.getFirstMinorIdx:recursor.getFirstIndexIdx].toArray
   if !(← forallIsSynthesizable retType) then throwError "Return type of motive not synthesizable: {retType}"
   trace[hdlean.compiler.compileRecursor] "compiling major val"
@@ -372,7 +373,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   trace[hdlean.compiler.compileValue] "whnfEvalEta: {e}"
   if let .some (.union #[]) := ← bitShape? (← inferType e) then
     trace[hdlean.compiler.compileValue] "value is a zst"
-    return ValueExpr.literal "/*ZST*/"
+    return .zst
   match e with
   | .fvar fvarId => do
     match (← read).env.get? fvarId with
