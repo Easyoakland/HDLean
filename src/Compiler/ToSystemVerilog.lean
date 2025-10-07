@@ -46,22 +46,51 @@ def getHWType (shape : BitShape) : CompilerM HWType := do
 def tagHWType (shape : BitShape) : CompilerM HWType := do
   return { width := shape.tagBits }
 
+section Primitives
+def BitVec.shiftLeftHW {m n : Nat} (x : BitVec m) (s : BitVec n) : BitVec m := BitVec.instHShiftLeft.hShiftLeft x s
+
+def BitVec.shiftRightHW {m n : Nat} (x : BitVec m) (s : BitVec n) : BitVec m := BitVec.instHShiftRight.hShiftRight x s
+
+instance (priority:=low) BitVec.instHShiftLeftHW : HShiftLeft  (BitVec m) (BitVec n) (BitVec m) := ⟨BitVec.shiftLeftHW⟩
+
+instance (priority:=low) BitVec.instHShiftRightHW : HShiftRight (BitVec m) (BitVec n) (BitVec m) := ⟨BitVec.shiftRightHW⟩
+
+instance (priority:=low) instDecidableLtBitVecHW (x y : BitVec w) : Decidable (LT.lt x y) :=
+  if h: x.ult y then .isTrue (by bv_decide)
+    -- .isTrue (by exact BitVec.ult_iff_lt.mp h)
+  else .isFalse (by bv_decide)
+    -- .isFalse (Std.Tactic.BVDecide.Normalize.BitVec.lt_ult x y ▸ h)
+
+instance (priority:=low) instDecidableLeBitVecHW (x y : BitVec w) : Decidable (LE.le x y) :=
+  if h: x.ule y then .isTrue (by bv_decide)
+  else .isFalse (by bv_decide)
+
+attribute [implemented_by_hw BitVec.instHShiftLeftHW] BitVec.instHShiftLeft
+attribute [implemented_by_hw BitVec.instHShiftRightHW] BitVec.instHShiftRight
+attribute [implemented_by_hw instDecidableLtBitVecHW] instDecidableLtBitVec
+attribute [implemented_by_hw instDecidableLeBitVecHW] instDecidableLeBitVec
+
 def denylist: NameSet := (NameSet.empty
   |>.insert ``BitVec.add
   |>.insert ``BitVec.sub
   |>.insert ``BitVec.mul
   |>.insert ``BitVec.ult
+  |>.insert ``BitVec.slt
   |>.insert ``BitVec.ule
+  |>.insert ``BitVec.sle
   |>.insert ``BitVec.decEq
+  |>.insert ``BitVec.and
+  |>.insert ``BitVec.or
+  |>.insert ``BitVec.xor
+  |>.insert ``BitVec.shiftLeftHW
+  |>.insert ``BitVec.shiftRightHW
+  |>.insert ``BitVec.sshiftRight'
   |>.insert ``Vector.get
   |>.insert ``Vector.extract
   |>.insert ``Mealy.pure
   |>.insert ``Mealy.scan
-  -- |>.insert ``instLTBitVec
-  -- |>.insert ``instLEBitVec
-  -- |>.insert ``instDecidableLtBitVec
-  -- |>.insert ``instDecidableLeBitVec
 )
+end Primitives
 
 -- TODO, denylist (or new list) which is used to only prevent unfolding if at least one argument to the function is unknown (contains meta or free variable), otherwise should reduce like regular since the result is guaranteed not to contain a free or meta var if it doesn't have any to start with. This way we can do more compile-time computation without getting blocked when we don't need to be.
 -- Note, if the function is over-applied and there's meta/free vars in the overapplied arguments, that doesn't matter for the purpose of unfolding the function.
@@ -137,21 +166,6 @@ field: {fieldIdx}"
   addItem <| .var {name, type := ← getHWType fieldShape}
   addItem <| .assignment (.identifier name) (.bitSelect constructedVal [start:start+width])
   return .identifier name
-
--- Substitute < notation on BitVec with this, which is the same but easier to detect and block during compilation.
--- @[inline, reducible] def _root_.BitVec.lt (x y: BitVec n) := x < y
--- @[inline, reducible] def _root_.BitVec.ble (x y: BitVec n): Bool := x ≤ y
--- @[inline, reducible] def _root_.BitVec.blt (x y: BitVec n): Bool := x < y
--- Substitute < notation on BitVec with this, which is the same but easier to detect and block during compilation.
--- @[inline, reducible] def instLTBitVecHW: LT (BitVec w) where
---   lt := BitVec.lt
--- @[inline, reducible] def instLEBitVecHW: LE (BitVec w) where
---   le := BitVec.le
-@[inline, reducible] instance instDecidableLtBitVecHW (x y : BitVec w) : Decidable (LT.lt x y) :=
-  if h: x.ult y then .isTrue (by bv_decide)
-    -- .isTrue (by exact BitVec.ult_iff_lt.mp h)
-  else .isFalse (by bv_decide)
-    -- .isFalse (Std.Tactic.BVDecide.Normalize.BitVec.lt_ult x y ▸ h)
 
 mutual
 /-- Compiles a projection expression `Expr.proj` (e.g., `a.1`) for structures and single-ctor inductives -/
@@ -283,13 +297,6 @@ partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Arr
     pure #[tagVal]
   return .concatenation <| Array.toList <| fieldVals ++ tagVal
 
-
-/-- Returns a substituted `Expr` if implemented by something else for hardware synthesis -/
-partial def HWImplementedBy? (e:Expr): MetaM (Option Name) := do
-  pure <| match e with
-  | (.const ``instDecidableLtBitVec []) => .some ``instDecidableLtBitVecHW
-  | _ => .none
-
 partial def resetName := `rst
 partial def clockName := `clk
 partial def activeLowResetValue := compileValue (mkNatLit 0)
@@ -302,7 +309,6 @@ partial def unwrapMealyType (e:Expr): CompilerM Expr := do
   let (fn, args) := e.getAppFnArgs
   let #[α] := args | throwError invalidNumArgs args fn
   return α
-
 
 /-- Given an expression `Mealy.scan s f reset` which represents a registered state element,
 return the output `ValueExpr` and `HWType` corresponding to `o` in the following (where <<>> indicates lean and the rest is SystemVerilog):
@@ -375,7 +381,6 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
   | .app .. | .const .. =>
     let (fn, args) := e.getAppFnArgs
     let invalidNumArgs := fun () => invalidNumArgs args fn
-    let fn := if let .some fn := ← HWImplementedBy? e.getAppFn then fn else fn
     if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}"
     match fn with
     | ``BitVec.ofFin =>
@@ -409,16 +414,56 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .lt x y
+    | ``BitVec.slt =>
+      let #[_n, x, y] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .lt (.castOp .signed x) (.castOp .signed y)
     | ``BitVec.ule =>
       let #[_n, x, y] := args | throwError invalidNumArgs ()
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .le x y
+    | ``BitVec.sle =>
+      let #[_n, x, y] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .le (.castOp .signed x) (.castOp .signed y)
     | ``BitVec.decEq =>
       let #[_w, x, y] := args | throwError invalidNumArgs ()
       let x ← compileValue x
       let y ← compileValue y
       return .binaryOp .eq x y
+    | ``BitVec.and =>
+      let #[_w, x, y] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .and x y
+    | ``BitVec.or =>
+      let #[_w, x, y] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .or x y
+    | ``BitVec.xor =>
+      let #[_w, x, y] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let y ← compileValue y
+      return .binaryOp .xor x y
+    | ``BitVec.shiftLeftHW =>
+      let #[_m, _n, x, s] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let s ← compileValue s
+      return .binaryOp .sll x s
+    | ``BitVec.shiftRightHW =>
+      let #[_m, _n, x, s] := args | throwError invalidNumArgs ()
+      let x ← compileValue x
+      let s ← compileValue s
+      return .binaryOp .srl x s
+    | ``BitVec.sshiftRight' =>
+      let #[_n, _m, a, s] := args | throwError invalidNumArgs ()
+      let a ← compileValue a
+      let s ← compileValue s
+      return .binaryOp .sra a s
     | ``Vector.get =>
       let #[α, _n, xs, i] := args | throwError invalidNumArgs ()
       let xs ← compileValue xs
@@ -890,9 +935,6 @@ end Testing
 section TestingMealy
 def use_mealy_pure : Mealy (BitVec 3) := Mealy.pure 1
 
--- set_option trace.Meta.whnf true in
-set_option trace.debug true
-set_option trace.hdlean.compiler true
 #eval do println! ← emit (``use_mealy_pure)
 
 def use_mealy_scan : Mealy (BitVec 3) := Mealy.scan (use_mealy_pure) fun v (st:BitVec 4) => (v, st)
@@ -950,6 +992,9 @@ open NotSynthesizable in
 def feedback (s:Mealy (σ → β × σ)) (reset:σ) : Mealy β :=
   s.scan (reset:=reset) fun f st => f st
 
+def feedback' (f:Mealy (α → σ → β × σ)) (i: Mealy α) (reset:σ) : Mealy β :=
+  (.,.)<$>i<*>f|>.scan (reset:=reset) fun (i,f) st => f i st
+
 unsafe def lut_mealy (vals: Array α) [Inhabited α]: Mealy α :=
   Mealy.pure () |>.scan fun () (st:BitVec vals.size) =>
     let rec lookup (w: Nat) (n:BitVec w) (vals:Array α) (h: n < vals.size): α :=
@@ -976,18 +1021,17 @@ unsafe def lut_mealy (vals: Array α) [Inhabited α]: Mealy α :=
 open NotSynthesizable in
 #eval! simulate (lut_mealy #[1,2,3,4]) (Array.replicate 20 ()) |>.map fun x => x.fst.value
 unsafe def lut_mealy_mono := lut_mealy #[(1:BitVec 3),2,3,4]
-set_option trace.hdlean.compiler true in
-set_option trace.Meta.whnf true in
-set_option maxHeartbeats 1000 in
 -- This won't work until BitVec arithmetic like functions (in this case sub and eq) reduce when fully-applied without free/meta vars even if in the denylist. Because they aren't unfolded this compiles both halves of the if statement forever when it should actually simplify to the recursive half repeatedly with the non-recursive half at the end. It should be able to unfold at compile time since `n` is known at compile time and `n-1` and `n=0` control if the function recurses at all.
-#eval do println! ← emit (``lut_mealy_mono)
+-- set_option trace.hdlean.compiler true in
+-- set_option trace.Meta.whnf true in
+-- set_option maxHeartbeats 1000 in
+-- #eval do println! ← emit (``lut_mealy_mono)
 
 def mealy_match (lut: Array (BitVec 3)): Mealy (BitVec 3) :=
   Mealy.pure () |>.scan fun
     | s, Bool.false => if h:s = () then (lut.back!, true) else by contradiction
     | (), b@Bool.true => (lut[0]!, not b)
 def mealy_match_mono := mealy_match #[1,2,3,4]
-set_option trace.hdlean.compiler true in
 #eval do println! ← emit (``mealy_match_mono)
 
 def mkVec : Vector (BitVec 3) 3 := #v[1,2].push 3
@@ -1004,26 +1048,17 @@ def indexVec' (vec: Vector (BitVec 4) 3) (idx: Fin 3): BitVec 4 :=
   vec[idx]
 def indexVec'' (vec: Vector (BitVec 4) 3) (fake_idx: Fin 3) (fake_idx2: Fin 3) :=
   vec.extract 1 3
-def indexVec''' (vec: Vector (BitVec 4) 3) (fake_idx: Fin 3) (h:fake_idx.1 = 0) (fake_idx2: Fin 3) (h2:fake_idx2.1 = 3) : Vector (BitVec 4) 3 :=
-  let ret := vec.extract fake_idx.1 fake_idx2.1
-  by
-    rw [h,h2] at ret
-    -- exact vec.extract 0 3
-    exact ret
 #eval do println! ← emit (``indexVec)
 #print indexVec'
-set_option trace.hdlean.compiler true in
-set_option trace.debug true in
 #eval do println! ← emit (``indexVec')
-set_option trace.hdlean.compiler true in
 #eval do println! ← emit (``indexVec'')
-#eval do println! ← emit (``indexVec''')
 #eval indexVec'' #v[1,2,3] 1 2
 
 def func_on_mealy (s:Mealy Bool): (Mealy Bool):= s.scan fun i st => (i, ())
 def use_func_on_mealy : (Mealy Bool):= func_on_mealy (Mealy.pure true |>.scan fun i (st:Bool) => if st then (i,not st) else (not i, not st))
 
-#eval do println! ← emit (``func_on_mealy)
+-- For this to work have to finish implement synthesis of functions which take `Mealy` as argument or return.
+-- #eval do println! ← emit (``func_on_mealy)
 #eval do println! ← emit (``use_func_on_mealy)
 
 def conditional_func (b:Bool): Bool → Bool:= match b with
@@ -1036,13 +1071,13 @@ def use_conditional_func (s:Mealy Bool): Mealy (Bool) := s.scan fun i (st:Bool) 
 | .false => (conditional_func false i, not st)
 | .true => (conditional_func true i, not st)
 
-#eval do println! ← emit (``conditional_func)
-#eval do println! ← emit (``use_conditional_func)
+-- #eval do println! ← emit (``conditional_func)
+-- #eval do println! ← emit (``use_conditional_func)
 def conditional_func' (_b:Bool) (_i: Bool): Bool := true
 def use_conditional_func' (s:Mealy Bool): Mealy (Bool) := s.scan fun i (st:Bool) => match st with
 | .false => (conditional_func' false i, not st)
 | .true => (conditional_func' true i, not st)
-set_option trace.hdlean.compiler true in
-#eval do println! ← emit (``use_conditional_func')
+-- set_option trace.hdlean.compiler true in
+-- #eval do println! ← emit (``use_conditional_func')
 
 end Hdlean.Compiler

@@ -1,5 +1,6 @@
 import Lean.Meta
 import Hdlean.Basic
+import Compiler.ImplementedByHWAttr
 
 namespace Hdlean.Meta
 
@@ -36,13 +37,16 @@ def canUnfold (e:Expr): MetaM Bool := do
   | none => pure Bool.true -- If not a name can't unfold anyway, so reduce like regular.
 
 set_option linter.unusedVariables false in
-/-- Like `unfoldDefinition?` but unfolds using (in order of priority) `implemented_by`, auxiliary `._unsafe_rec`, or actual value of constant (even if constant is `opaque`)
+/-- Like `unfoldDefinition?` but unfolds using (in order of priority) `implemented_by_hw`, `implemented_by`, auxiliary `._unsafe_rec`, or actual value of constant (even if constant is `opaque`)
 -/
 def unfoldDefinitionEval? (e : Expr) : MetaM (Option Expr) := do
   if !(← canUnfold e) then return .none
   let fn := e.getAppFn'
   let args := e.getAppArgs
   let .const fn lvls := fn | return .none
+  -- -- Try `implemented_by_hw`
+  if let .some fn' := Compiler.getImplementedByHw? (← getEnv) fn then
+    return mkAppN (.const fn' lvls) args
   -- Try `implemented_by`
   if let .some fn := Compiler.getImplementedBy? (← getEnv) fn then
     return mkAppN (.const fn lvls) args
@@ -62,6 +66,40 @@ def unfoldDefinitionEval? (e : Expr) : MetaM (Option Expr) := do
   trace[debug] "4: instead return: {e'}"
   return e' -/
 
+mutual
+/-- `whnfAtMostI` but using `whnfEvalImp`. -/
+partial def whnfEvalAtMostI (e : Expr) : MetaM Expr := do
+  match (← getTransparency) with
+  | .all | .default => withTransparency TransparencyMode.instances <| whnfEvalImp e
+  | _ => whnfEvalImp e
+
+/-- Wraps `whnfCore` so that its internal calls to `whnf` instead go through `whnfEvalImp`.  -/
+partial def whnfEvalCore (e : Expr) : MetaM Expr := do
+  match e with
+  | .app f ..       =>
+    let f := f.getAppFn
+    let f' ← whnfEvalCore f
+    let e' := mkAppN f' e.getAppArgs
+    -- If we reduced the head then try again and maybe reduce more. If we didn't then we're safe to run `whnfCore` without it having to deal with reducible `.proj` and therefore without it running a `whnf` which isn't `whnfEval`.
+    if f' != f then whnfEvalCore e' else whnfCore e'
+  | .proj _ i c =>
+    let k (c : Expr) := do
+      match (← projectCore? c i) with
+      | some e => whnfEvalCore e
+      | none => return e
+    -- `whnfCore` calls `whnf` when this setting is set above `.yes`, so we use our `whnfEval` versions here instead.
+    match (← getConfig).proj with
+    | .no => return e
+    | .yes => k (← whnfEvalCore c)
+    | .yesWithDelta => k (← whnfEvalImp c)
+    -- Remark: If the current transparency setting is `reducible`, we should not increase it to `instances`
+    | .yesWithDeltaI => k (← whnfEvalAtMostI c)
+  | e =>
+    -- `whnfCore` uses `whnf` to handle projections if this setting is above `.yes`. To use `whnfEval` instead, we set this to `.no` so instead `whnfCore` will return the value unchanged and we can handle the `.proj` with `whnfEval` if needed.
+    let e ← withConfig (fun config => {config with proj := .no}) <| whnfCore e
+    -- Check if `e` became a `.proj`. If it did we should loop to use our Eval version to handle `.proj`. If it didn't then this return is a regular `whnfCore` return.
+    if let .proj .. := e then whnfEvalCore e else pure e
+
 /-- A hybrid of `Lean.Meta.whnfImp` and eval. Different from `Lean.Meta.whnfImp` in that:
 - Checks `canUnfold?` before doing primitive reductions so the denylist can prevent primitive reductions even when fully applied. In other words, primitives like `Nat.add` are considered to be unfolded to get reduced.
   - TODO(fix): Doesn't cache, so it's slower than `whnfImp`.
@@ -72,7 +110,7 @@ partial def whnfEvalImp (e : Expr) : MetaM Expr :=
       withTraceNode `Meta.whnf (fun _ => return m!"Non-easy whnfEval: {e}") do
         checkSystem "whnf"
         if ← canUnfold e then
-          let e' ← whnfCore e
+          let e' ← whnfEvalCore e
           match (← reduceNat? e') with
           | some v => pure v
           | none   =>
@@ -83,6 +121,7 @@ partial def whnfEvalImp (e : Expr) : MetaM Expr :=
               | some e' => whnfEvalImp e'
               | none => pure e'
         else pure e
+end
 
 /-- Run `MetaM α` with `canUnfold?` set such that it respects `denylist` -/
 def withDenylist (denylist : NameSet) (a:MetaM α) : MetaM α := do

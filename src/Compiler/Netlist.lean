@@ -175,6 +175,16 @@ def UnOp.emit : UnOp → String
   | or => "|"
   | xor => "^"
 
+inductive CastOp
+  | signed
+  | unsigned
+  deriving Repr, BEq, Hashable
+
+/-- Emit prefix of the cast operation. Requires the casted value to additionally be wrapped in parens. -/
+def CastOp.emit: CastOp → String
+  | signed => "signed'"
+  | unsigned => "unsigned'"
+
 /-!
 Borrows the terms "value", "space", "place" from [vine](https://vine.dev/docs/features/values-spaces-places.html?highlight=place#values-spaces-and-places)
 
@@ -209,6 +219,7 @@ inductive ValueExpr where
   | literal (val : String)
   | binaryOp (op : BinOp) (left : ValueExpr) (right : ValueExpr)
   | unaryOp (op : UnOp) (operand : ValueExpr)
+  | castOp (op : CastOp) (operand : ValueExpr)
   | bitSelect (base : ValueExpr) (index : BitSlice)
   | dynamicBitSelect (base : ValueExpr) (index : DynamicBitSlice)
   /-- Stored from most to least significant order. -/
@@ -231,6 +242,7 @@ def ValueExpr.emit: ValueExpr → Option String
   | .literal val => .some val
   | .binaryOp op l r => do s!"({← l.emit} {op.emit} {← r.emit})"
   | .unaryOp op x => do s!"({op.emit}{← x.emit})"
+  | .castOp op x => do s!"({op.emit}({← x.emit}))"
   | .bitSelect b i => do s!"{← b.emit}{← i.emit}"
   | .dynamicBitSelect b i => do s!"{← b.emit}{← i.emit}"
   | .concatenation xs => if xs.length = 0 then .none else do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR ", " |>.foldl String.append "") ++ "}"
