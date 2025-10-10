@@ -242,6 +242,16 @@ def Mealy.scan {α β σ: Type u} (s : Mealy α) (f : α → σ → (β×σ)) (r
     let (b, st_fst') := f a st.fst
     (b, (st_fst', st_snd'))
 
+def Mealy.merge (a : Mealy α) (b : Mealy β): Mealy (α × β) where
+  σ := a.σ × b.σ
+  I := a.I × b.I
+  value := (a.value, b.value)
+  state := (a.state, b.state)
+  transition i st :=
+    let (a', aSt') := a.transition i.fst st.fst
+    let (b', bSt') := b.transition i.snd st.snd
+    ((a', b'), (aSt', bSt'))
+
 @[inline] def Mealy.compose (m1: Mealy O1) (m2: Mealy O) (h:O1=m2.I := by trivial): Mealy O where
   σ := m1.σ × m2.σ
   I := m1.I

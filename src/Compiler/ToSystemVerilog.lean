@@ -89,6 +89,7 @@ def denylist: NameSet := (NameSet.empty
   |>.insert ``Vector.extract
   |>.insert ``Mealy.pure
   |>.insert ``Mealy.scan
+  |>.insert ``Mealy.merge
 )
 end Primitives
 
@@ -311,6 +312,18 @@ partial def unwrapMealyType (e:Expr): CompilerM Expr := do
   let #[α] := args | throwError invalidNumArgs args fn
   return α
 
+partial def compileMealyMerge (e:Expr) : CompilerM (ValueExpr × HWType) := do
+  let (fn, args) := e.getAppFnArgs
+  if fn != ``Mealy.merge then throwError "HDLean Internal Error: fn not Mealy.merge"
+  let invalidNumArgs := fun () => invalidNumArgs args fn
+  let #[_α,_β,a,b] := args | throwError invalidNumArgs ()
+  let aVal ← compileValue a
+  let bVal ← compileValue b
+  let eType ← unwrapMealyType (← inferType e)
+  let .some retShape ← bitShape? eType | throwError "unwrapped return type of Mealy.merge has unknown bit shape: {eType}"
+  let retHWType ← getHWType retShape
+  return (.concatenation [aVal, bVal], retHWType)
+
 /-- Given an expression `Mealy.scan s f reset` which represents a registered state element,
 return the output `ValueExpr` and `HWType` corresponding to `o` in the following (where <<>> indicates lean and the rest is SystemVerilog):
 ```systemverilog
@@ -489,7 +502,8 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       -- `Mealy.pure` is treated transparently.
       compileValue a
     | ``Mealy.scan =>
-      Prod.fst <$> compileMealyScan e
+    | ``Mealy.merge =>
+      Prod.fst <$> compileMealyMerge e
     | fn =>
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
@@ -556,6 +570,9 @@ body = {body}"
         return ← compileFun <| ← whnfEvalEta <| ← mkAppM ``Mealy.value #[body]
       else if body.getAppFn.constName? == ``Mealy.scan then
         let compiledBody ← compileMealyScan body
+        pure <| (true, Option.some compiledBody)
+      else if body.getAppFn.constName? == ``Mealy.merge then
+        let compiledBody ← compileMealyMerge body
         pure <| (true, Option.some compiledBody)
       else
         throwError err () body'
