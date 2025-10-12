@@ -341,7 +341,6 @@ partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
   let invalidNumArgs := fun () => invalidNumArgs args fn
   let #[α,β,σ,s,f,reset] := args | throwError invalidNumArgs ()
   trace[hdlean.compiler.compileMealyScan] "compiling mealy scan{Format.line}α={α},{Format.line}β={β},{Format.line}σ={σ},{Format.line}s={s},{Format.line}f={f},{Format.line}reset={reset}"
-  trace[debug] "s={s},f={f},reset={reset}"
   let stateName ← mkFreshUserName `registerState
   let newStateName ← mkFreshUserName `newRegisterState
   let outputName ← mkFreshUserName `registerOutput
