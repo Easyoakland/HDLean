@@ -168,6 +168,15 @@ field: {fieldIdx}"
   addItem <| .assignment (.identifier name) (.bitSelect constructedVal [start:start+width])
   return .identifier name
 
+
+partial def invalidNumArgs (args: Array α) (fn: Name): MessageData := m!"Invalid number of arguments ({args.size}) for {fn}"
+
+/-- Given a type of `Mealy α`, return `α` -/
+partial def unwrapMealyType [MonadError n] [Monad n] (e:Expr): n Expr := do
+  let (fn, args) := e.getAppFnArgs
+  let #[α] := args | throwError invalidNumArgs args fn
+  return α
+
 mutual
 /-- Compiles a projection expression `Expr.proj` (e.g., `a.1`) for structures and single-ctor inductives -/
 partial def compileExprProj (typeName:Name) (idx:Nat) (struct:Expr) : CompilerM ValueExpr := do
@@ -303,14 +312,6 @@ partial def resetName := `rst
 partial def clockName := `clk
 partial def activeLowResetValue := compileValue (mkNatLit 0)
 partial def activeHighResetValue := compileValue (mkNatLit 1)
-
-partial def invalidNumArgs (args: Array α) (fn: Name): MessageData := m!"Invalid number of arguments ({args.size}) for {fn}"
-
-/-- Given a type of `Mealy α`, return `α` -/
-partial def unwrapMealyType (e:Expr): CompilerM Expr := do
-  let (fn, args) := e.getAppFnArgs
-  let #[α] := args | throwError invalidNumArgs args fn
-  return α
 
 partial def compileMealyMerge (e:Expr) : CompilerM (ValueExpr × HWType) := do
   let (fn, args) := e.getAppFnArgs
