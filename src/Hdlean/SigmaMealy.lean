@@ -195,32 +195,6 @@ namespace Hdlean -- re-open the top-level Hdlean namespace now that we're done w
   state := ()
   transition _ _ := (a, .unit)
 
-@[inline] instance : Applicative (Mealy) where
-  pure := Mealy.pure
-  seq f a := let a := a (); {
-    σ := (f.σ× a.σ)
-    I := (f.I× a.I)
-    value := f.value a.value
-    state := (f.state, a.state)
-    transition i s :=
-      let (f, fs) := f.transition i.fst s.fst
-      let (a, as) := a.transition i.snd s.snd
-      (f a, (fs, as))
-  }
-
-@[inline] instance [HMul α β γ] : HMul (Mealy α) (Mealy β) (Mealy γ) where
-  hMul a b := (.*.) <$> a <*> b
-@[inline] instance [HAdd α β γ] : HAdd (Mealy α) (Mealy β) (Mealy γ) where
-  hAdd a b := (.+.) <$> a <*> b
-
-/-- Make a mealy machine which takes no input from its transition function and initial state. -/
-def Mealy.corec {α σ :Type _} (f : σ → α × σ) (st : σ) : Mealy α where
-  σ := σ
-  I := Unit
-  value := f st |>.fst
-  state := st
-  transition _ s := f s
-
 /-- In hardware this corresponds to a new Mealy machine made with a new registered state `σ` which merges the output of machine `s` and the previous `σ` state of the new machine, using `f`.
 
 If `s` outputs values `[1,2,3,4,...]`
@@ -242,6 +216,7 @@ def Mealy.scan {α β σ: Type u} (s : Mealy α) (f : α → σ → (β×σ)) (r
     let (b, st_fst') := f a st.fst
     (b, (st_fst', st_snd'))
 
+/-- Combine two separate `Mealy` into one tuple. -/
 def Mealy.merge (a : Mealy α) (b : Mealy β): Mealy (α × β) where
   σ := a.σ × b.σ
   I := a.I × b.I
@@ -251,6 +226,64 @@ def Mealy.merge (a : Mealy α) (b : Mealy β): Mealy (α × β) where
     let (a', aSt') := a.transition i.fst st.fst
     let (b', bSt') := b.transition i.snd st.snd
     ((a', b'), (aSt', bSt'))
+
+/- def Mealy.scan2 {α α2 β σ: Type u} (s : Mealy α) (s2 : Mealy α2) (f : α → α2 → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : Mealy β where
+  σ := (σ × s.σ × s2.σ)
+  I := s.I × s2.I
+  value := (f s.value s2.value reset).fst
+  state := ((f s.value s2.value reset).snd, (s.state, s2.state))
+  transition i st :=
+    let (a, st_snd') := s.transition i.fst st.snd.fst
+    let (a2, st_snd2') := s2.transition i.snd st.snd.snd
+    let (b, st_fst') := f a a2 st.fst
+    (b, (st_fst', (st_snd', st_snd2'))) -/
+
+/- @[inline] instance : Applicative (Mealy) where
+  pure := Mealy.pure
+  seq f a := let a := a (); {
+    σ := (f.σ× a.σ)
+    I := (f.I× a.I)
+    value := f.value a.value
+    state := (f.state, a.state)
+    transition i s :=
+      let (f, fs) := f.transition i.fst s.fst
+      let (a, as) := a.transition i.snd s.snd
+      (f a, (fs, as))
+  } -/
+
+/- @[inline] instance : Applicative (Mealy) where
+  pure := Mealy.pure
+  seq f a := f.scan2 (a ()) (reset:=()) fun f a () => (f a,()) -/
+
+-- By defining this in terms of `pure`, `merge`, and `scan` it is synthesizable.
+@[inline] instance : Applicative (Mealy) where
+  pure := Mealy.pure
+  seq f a := f.merge (a ()) |>.scan (reset:=()) fun (f,a) () => (f a,())
+
+@[inline] instance [HMul α β γ] : HMul (Mealy α) (Mealy β) (Mealy γ) where
+  hMul a b := (.*.) <$> a <*> b
+@[inline] instance [HAdd α β γ] : HAdd (Mealy α) (Mealy β) (Mealy γ) where
+  hAdd a b := (.+.) <$> a <*> b
+
+/-- Make a mealy machine which takes no input from its transition function and an initial state. -/
+def Mealy.corec {α σ :Type _} (f : σ → α × σ) (st : σ) : Mealy α where
+  σ := σ
+  I := Unit
+  value := f st |>.fst
+  -- value := (f (f st |>.snd)).fst
+  state := st
+  transition _ s := f s
+
+def Mealy.destruct (s : Mealy β) (h:Unit = s.I) : β × Mealy β :=
+  let (o,st') := s.transition (cast h ()) s.state
+  (o, ⟨s.σ,s.I,o,st',s.transition⟩)
+
+/- theorem Mealy.destruct_corec (f : α → β × α) (a : α) :
+  (corec f a).destruct ?h = let (b, a) := f a; (b, corec f a) := by
+    simp [corec, destruct]
+    rfl
+    -- This doesn't work because of the `value` field.
+    -- If we want this theorem, which might be the right way to go about things, we'll have to get rid of `I` and `value` fields. -/
 
 @[inline] def Mealy.compose (m1: Mealy O1) (m2: Mealy O) (h:O1=m2.I := by trivial): Mealy O where
   σ := m1.σ × m2.σ

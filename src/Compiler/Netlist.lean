@@ -200,10 +200,16 @@ inductive SpaceExpr : Type where
   | concatenation (spaces : List SpaceExpr)
   deriving Repr, BEq, Hashable
 
+/-- The canonical way to represent a zero-sized `SpaceExpr` -/
+def SpaceExpr.zst: SpaceExpr := .concatenation []
+
 def SpaceExpr.emit: SpaceExpr → Option String
   | identifier id => id.emit
   | bitSelect id bs => do s!"{← id.emit}{← bs.emit}"
-  | concatenation spaces => if spaces.length = 0 then .none else do return "{" ++ ((←spaces.mapM (·.emit)).intersperseTR ", " |>.foldl (init:="") String.append) ++ "}"
+  | concatenation xs =>
+    let xs := xs.flatMap (·.emit |>.toList)
+    if xs.length = 0 then .none else
+    return "{" ++ (xs.intersperseTR ", " |>.foldl String.append "") ++ "}"
 
 -- #eval SpaceExpr.concatenation [SpaceExpr.identifier `a, .identifier `b |> (SpaceExpr.bitSelect . [1:3])] |>.emit |>.get!
 
@@ -245,7 +251,10 @@ def ValueExpr.emit: ValueExpr → Option String
   | .castOp op x => do s!"({op.emit}({← x.emit}))"
   | .bitSelect b i => do s!"{← b.emit}{← i.emit}"
   | .dynamicBitSelect b i => do s!"{← b.emit}{← i.emit}"
-  | .concatenation xs => if xs.length = 0 then .none else do return "{" ++ ((←xs.mapM (·.emit)).intersperseTR ", " |>.foldl String.append "") ++ "}"
+  | .concatenation xs =>
+    let xs := xs.flatMap (·.emit |>.toList)
+    if xs.length = 0 then .none else
+    return "{" ++ (xs.intersperseTR ", " |>.foldl String.append "") ++ "}"
 end
 -- #eval println! ValueExpr.binaryOp .add (ValueExpr.concatenation [ValueExpr.identifier `a, .identifier `b, .literal "'b101"]) (ValueExpr.unaryOp (.not) (ValueExpr.identifier `c)) |>.emit
 

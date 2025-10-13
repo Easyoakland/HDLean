@@ -325,6 +325,75 @@ partial def compileMealyMerge (e:Expr) : CompilerM (ValueExpr × HWType) := do
   let retHWType ← getHWType retShape
   return (.concatenation [aVal, bVal], retHWType)
 
+/-- Add an expression wrapped inside synthesizable `Mealy` constructor to the local context (as a let) after unwrapping the expression.
+
+For example, in `Mealy.pure (a:α) |>.scan fun b st => ...`
+
+`withLetFromMealy` would be used on `Mealy.pure a` before compiling `fun b st => ...` to add `let b : α := a` to the context before executing `k b`.
+-/
+partial def withLetFromMealy (name : Name) (e : Expr) (k : Expr → CompilerM α) : CompilerM α := do
+  trace[debug] "{`withLetFromMealy}{Format.line}name = {name},{Format.line}e = {e}"
+  let e ← whnfEvalEta e
+  let k (e:Expr) := do
+    trace[debug] "continuation withLetFromMealy with e = {e}"
+    withLetDecl name (← inferType e) e fun fVar => do
+    trace[debug] "fVar = {fVar}"
+      k fVar
+  let (fn, args) := e.getAppFnArgs
+  if fn == Name.anonymous then throwError "TODO: {e} head has no name"
+  if fn == ``Mealy.pure then
+    trace[debug] "withLetFromMealy pure"
+    let #[_α, a] := args | throwError invalidNumArgs args fn
+    trace[debug] "withLetFromMealy pure of {a}"
+    k a
+  else if fn == ``Mealy.scan then
+    trace[debug] "withLetFromMealy scan"
+    let u := e.getAppFn.constLevels![0]!
+    let (fn, args) := e.getAppFnArgs
+    if fn != ``Mealy.scan then throwError "HDLean Internal Error: fn not Mealy.scan"
+    let invalidNumArgs := fun () => invalidNumArgs args fn
+    let #[α,β,σ,s,f,reset] := args | throwError invalidNumArgs ()
+    trace[debug] "withLetFromMealy scan of s={s},reset={reset},f={f}"
+    trace[hdlean.compiler.compileMealyScan] "compiling mealy scan{Format.line}α={α},{Format.line}β={β},{Format.line}σ={σ},{Format.line}s={s},{Format.line}f={f},{Format.line}reset={reset}"
+    let stateName ← mkFreshUserName `registerState
+    let newStateName ← mkFreshUserName `newRegisterState
+    let .some σShape ← bitShape? σ | throwError "σ has unknown bit shape: {σ}"
+    let σHWType ← getHWType σShape
+    addItem <| .var { name := stateName, type := σHWType }
+    addItem <| .var { name := newStateName, type := σHWType }
+    trace[hdlean.compiler.compileMealyScan] "compiling reset value"
+    let resetValue ← compileValue reset
+    trace[hdlean.compiler.compileMealyScan] "compiling scan input"
+    withLetFromMealy `s s fun sFVar => do
+    -- TODO use reset value in initial block.
+    -- TODO combine `withLocalDeclD` with modifying `CompileContext` instead of manually doing both.
+    withLocalDeclD `state (← inferType reset) fun stateFVar => do
+    withReader (fun ctx => {ctx with env := (
+      ctx.env.insert stateFVar.fvarId! (.identifier stateName)
+    )}) do
+      trace[hdlean.compiler.compileMealyScan] "compiling scan function"
+      let scanOutput := (mkApp2 f sFVar stateFVar)
+      let appliedF ← compileValue <| mkApp3 (.const ``Prod.snd [u,u]) α σ scanOutput
+      if σHWType.width != 0 then
+        addItem <| .assignment (.identifier newStateName) (appliedF)
+        addItem <| .alwaysClocked .posedge clockName [
+          Stmt.conditionalAssignment .nonblocking
+            (.identifier stateName) σHWType
+            (.identifier resetName) ResetHWType
+            [(← activeLowResetValue, resetValue)] -- TODO this is only active low, haven't yet implemented customization change based on domain.
+            (.some (.identifier newStateName))
+        ]
+      let f' := mkApp3 (.const ``Prod.fst [u,u]) β σ scanOutput
+      k f'
+  else if fn == ``Mealy.merge then
+    trace[debug] "withLetFromMealy merge"
+    let #[α,β,a,b] := args | throwError invalidNumArgs args fn
+    withLetFromMealy `a a fun a =>
+    withLetFromMealy `b b fun b =>
+    k <| mkAppN (.const ``Prod.mk e.getAppFn.constLevels!) #[α,β,a,b]
+  else
+    throwError "HDLean Internal Error: withLetFromMealy called on expression that isn't wrapped in a synthesizable Mealy constructor: {e}"
+
 /-- Given an expression `Mealy.scan s f reset` which represents a registered state element,
 return the output `ValueExpr` and `HWType` corresponding to `o` in the following (where <<>> indicates lean and the rest is SystemVerilog):
 ```systemverilog
@@ -355,28 +424,30 @@ partial def compileMealyScan (e:Expr) : CompilerM (ValueExpr × HWType) := do
   trace[hdlean.compiler.compileMealyScan] "compiling reset value"
   let resetValue ← compileValue reset
   trace[hdlean.compiler.compileMealyScan] "compiling scan input"
-  let sValue ← compileValue s
+  withLetFromMealy `s s fun sFVar => do
   -- TODO use reset value in initial block.
   -- TODO combine `withLocalDeclD` with modifying `CompileContext` instead of manually doing both.
-  withLocalDeclD `s (← unwrapMealyType <| ← inferType s) fun sFVar => do
   withLocalDeclD `state (← inferType reset) fun stateFVar => do
   withReader (fun ctx => {ctx with env := (
-    ctx.env
-      |>.insert sFVar.fvarId! sValue
-      |>.insert stateFVar.fvarId! (.identifier stateName)
+    ctx.env.insert stateFVar.fvarId! (.identifier stateName)
   )}) do
     trace[hdlean.compiler.compileMealyScan] "compiling scan function"
     let appliedF ← compileValue (mkApp2 f sFVar stateFVar)
-    addItem <| .assignment
-      (.concatenation [.identifier outputName, .identifier newStateName])
-      (appliedF)
-    addItem <| .alwaysClocked .posedge clockName [
-      Stmt.conditionalAssignment .nonblocking
-        (.identifier stateName) σHWType
-        (.identifier resetName) ResetHWType
-        [(← activeLowResetValue, resetValue)] -- TODO this is only active low, haven't yet implemented customization change based on domain.
-        (.some (.identifier newStateName))
-    ]
+    let mut registerOutputConcatRegisterState := []
+    if σHWType.width != 0 then
+      registerOutputConcatRegisterState := registerOutputConcatRegisterState.cons <| .identifier newStateName
+    if βHWType.width != 0 then
+      registerOutputConcatRegisterState := registerOutputConcatRegisterState.cons <| .identifier outputName
+    if βHWType.width != 0 || σHWType.width != 0 then
+      addItem <| .assignment (.concatenation registerOutputConcatRegisterState) (appliedF)
+    if σHWType.width != 0 then
+      addItem <| .alwaysClocked .posedge clockName [
+        Stmt.conditionalAssignment .nonblocking
+          (.identifier stateName) σHWType
+          (.identifier resetName) ResetHWType
+          [(← activeLowResetValue, resetValue)] -- TODO this is only active low, haven't yet implemented customization change based on domain.
+          (.some (.identifier newStateName))
+      ]
   return (.identifier outputName, βHWType)
 
 -- TODO: Return `BitShape` or `HWType` of returned `ValueExpr` and use that instead of doing `inferType` since `inferType` is the wrong thing to use when encountering `Mealy α`. Alternative (maybe uglier?) solution is to write custom `HWInferType` or `HWBitShape?`.
@@ -388,15 +459,23 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
     trace[hdlean.compiler.compileValue] "value is a zst"
     return .zst
   match e with
-  | .fvar fvarId => do
-    match (← read).env.get? fvarId with
+  | .fvar fvarId => do match (← read).env.get? fvarId with
     | .some value => pure value
-    | .none => throwError "Unknown free variable: {fvarId}"
+    | .none => throwError "Unknown free variable: {← fvarId.getUserName}={fvarId}"
   | .app .. | .const .. =>
     let (fn, args) := e.getAppFnArgs
     let invalidNumArgs := fun () => invalidNumArgs args fn
-    if fn.isAnonymous then throwError "HDLean Internal Error: non-constant application {e}"
     match fn with
+    | Name.anonymous =>
+      if let .fvar fvarId := e.getAppFn then do
+        match (← read).env.get? fvarId with
+        | .some value => throwError "HDLean Internal Error: compile has head fvar = {value} in an app"
+        | .none => match (← readThe Meta.Context).lctx.fvarIdToDecl[fvarId] with
+          | .some f =>
+            let .some f := f.value? | throwError "HDLean Internal Error: {f} is a let without a value"
+            compileValue <| mkAppN f args
+          | .none => throwError "Unknown free variable in application head: {← fvarId.getUserName}={fvarId}"
+      else throwError "HDLean Internal Error: non-constant and non free application: {e}"
     | ``BitVec.ofFin =>
       let #[_w, toFin] := args | throwError invalidNumArgs ()
       let val ← compileValue toFin
@@ -502,6 +581,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       -- `Mealy.pure` is treated transparently.
       compileValue a
     | ``Mealy.scan =>
+      Prod.fst <$> compileMealyScan e
     | ``Mealy.merge =>
       Prod.fst <$> compileMealyMerge e
     | fn =>
@@ -1006,12 +1086,33 @@ open NotSynthesizable in
 #eval! simulate (delayN 3 (α:=BitVec 14) cyclic_fibonacci_series) (Array.replicate 20 (cast sorry ())) |>.take 20 |>.map fun x => x.fst.value |> ToString.toString
 -- TODO, make a `reduce` function using `Hdlean.Meta.whnfEvalEta` so it uses `._unsafe.rec` in order to get stuff like `delay4_mono.σ` to actually evaluate instead of getting stuck in `Acc.rec` madness.
 
-#check Mealy.scan
+def mealy_merge := Mealy.pure 3#2 |>.merge <| (Mealy.pure ()).scan fun () (st:BitVec 4) => (st+1,st*2)
+#eval do println! ← emit (``mealy_merge)
+
 def feedback (s:Mealy (σ → β × σ)) (reset:σ) : Mealy β :=
   s.scan (reset:=reset) fun f st => f st
 
 def feedback' (f:Mealy (α → σ → β × σ)) (i: Mealy α) (reset:σ) : Mealy β :=
   (.,.)<$>i<*>f|>.scan (reset:=reset) fun (i,f) st => f i st
+
+def feedback'_mono := feedback' (Mealy.pure () |>.scan fun () (st:BitVec 2) => (fun prev st => (prev+st,prev+st), 3)) (Mealy.pure (1#31)) (0#31)
+#eval do println! ← emit (``feedback'_mono)
+
+def mealy_f (s:Mealy (α → α)) (reset: α) : Mealy α :=
+  s.scan (reset:=reset) fun s st => (s st, s st)
+def mealy_id_mono := mealy_f (.pure id) (0#3)
+set_option trace.hdlean.compiler true in
+#eval do println! ← emit (``mealy_id_mono)
+
+def mealy_add_mono := mealy_f (.pure <| fun b => b + 1) (0#3)
+set_option trace.hdlean.compiler true in
+#eval do println! ← emit (``mealy_add_mono)
+
+def mealy_compose_f {α β γ : Type _} (s1:Mealy (α → β)) (s2: Mealy (β → γ)) (reset: α) : Mealy γ :=
+  s1.merge s2 |>.scan (reset:=reset) fun (s1,s2) st => (s2 <| s1 st, st)
+def mealy_compose_f_mono := mealy_compose_f (.pure fun a => a + 1) (.pure fun b => b * 2) (3#3)
+set_option trace.hdlean.compiler true in
+#eval do println! ← emit (``mealy_compose_f_mono)
 
 unsafe def lut_mealy (vals: Array α) [Inhabited α]: Mealy α :=
   Mealy.pure () |>.scan fun () (st:BitVec vals.size) =>
@@ -1039,7 +1140,7 @@ unsafe def lut_mealy (vals: Array α) [Inhabited α]: Mealy α :=
 open NotSynthesizable in
 #eval! simulate (lut_mealy #[1,2,3,4]) (Array.replicate 20 ()) |>.map fun x => x.fst.value
 unsafe def lut_mealy_mono := lut_mealy #[(1:BitVec 3),2,3,4]
--- This won't work until BitVec arithmetic like functions (in this case sub and eq) reduce when fully-applied without free/meta vars even if in the denylist. Because they aren't unfolded this compiles both halves of the if statement forever when it should actually simplify to the recursive half repeatedly with the non-recursive half at the end. It should be able to unfold at compile time since `n` is known at compile time and `n-1` and `n=0` control if the function recurses at all.
+-- This won't work until BitVec arithmetic like functions (in this case sub and eq) reduce when fully-applied without free/meta vars (TODO possibly also require canonical form?) even if in the denylist. Because they aren't unfolded this compiles both halves of the if statement forever when it should actually simplify to the recursive half repeatedly with the non-recursive half at the end. It should be able to unfold at compile time since `n` is known at compile time and `n-1` and `n=0` control if the function recurses at all.
 -- set_option trace.hdlean.compiler true in
 -- set_option trace.Meta.whnf true in
 -- set_option maxHeartbeats 1000 in
@@ -1097,5 +1198,15 @@ def use_conditional_func' (s:Mealy Bool): Mealy (Bool) := s.scan fun i (st:Bool)
 | .true => (conditional_func' true i, not st)
 -- set_option trace.hdlean.compiler true in
 -- #eval do println! ← emit (``use_conditional_func')
+
+def mealy_synthesizable_of_function := Mealy.pure id
+  |>.scan (fun (f: BitVec 3 → BitVec 3) (st: Bool) => ((f . + (if st then 1 else 0)), not st))
+  |>.scan (fun f () => (id f, ()))
+  |>.merge (Mealy.pure id |>.scan fun f () => (id f, ()))
+  |>.scan (fun (f,f2) st => (f2 <| f st, st+(1:BitVec 3)))
+#check mealy_synthesizable_of_function
+set_option trace.hdlean.compiler true in
+set_option trace.debug true in
+#eval do println! ← emit (``mealy_synthesizable_of_function)
 
 end Hdlean.Compiler
