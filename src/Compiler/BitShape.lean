@@ -14,17 +14,17 @@ namespace Nat
 
   example : Nat.ceilLog2 0 = 0 := rfl
   example : Nat.ceilLog2 1 = 0 := rfl
-  example : Nat.ceilLog2 2 = 1 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 3 = 2 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 4 = 2 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 5 = 3 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 6 = 3 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 7 = 3 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 8 = 3 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 9 = 4 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 10 = 4 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 16 = 4 := by simp [Nat.ceilLog2, Nat.log2]
-  example : Nat.ceilLog2 17 = 5 := by simp [Nat.ceilLog2, Nat.log2]
+  example : Nat.ceilLog2 2 = 1 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 3 = 2 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 4 = 2 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 5 = 3 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 6 = 3 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 7 = 3 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 8 = 3 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 9 = 4 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 10 = 4 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 16 = 4 := by simp [Nat.ceilLog2, Nat.log2, ble]
+  example : Nat.ceilLog2 17 = 5 := by simp [Nat.ceilLog2, Nat.log2, ble]
 end Nat
 
 namespace Lean
