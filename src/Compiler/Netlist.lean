@@ -99,7 +99,7 @@ inductive HWVariant where
   deriving Repr, BEq, Hashable, Inhabited
 
 def HWVariant.emit: HWVariant → String
-  | logicVar => "logic var"
+  | logicVar => "var logic"
   | wire => "wire"
   | reg => "reg"
   | user s => s.emit
@@ -249,8 +249,8 @@ def ValueExpr.emit: ValueExpr → Option String
   | .binaryOp op l r => do s!"({← l.emit} {op.emit} {← r.emit})"
   | .unaryOp op x => do s!"({op.emit}{← x.emit})"
   | .castOp op x => do s!"({op.emit}({← x.emit}))"
-  | .bitSelect b i => do s!"{← b.emit}{← i.emit}"
-  | .dynamicBitSelect b i => do s!"{← b.emit}{← i.emit}"
+  | .bitSelect b i => do s!"\{{← b.emit}}{← i.emit}"
+  | .dynamicBitSelect b i => do s!"\{{← b.emit}}{← i.emit}"
   | .concatenation xs =>
     let xs := xs.flatMap (·.emit |>.toList)
     if xs.length = 0 then .none else

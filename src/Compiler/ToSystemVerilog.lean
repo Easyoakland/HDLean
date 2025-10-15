@@ -485,7 +485,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let val ← compileValue val
       let n ← try unsafe Meta.evalExpr Nat (.const ``Nat {}) n
         catch e => throwError "Can't compile Fin.mk: can't evaluate upper bound = '{n}': {e.toMessageData}"
-      let lit := match val.emit with |.none => "" |.some val => s!"{n.ceilLog2}'{val}" -- Add width annotation
+      let lit := match val.emit with |.none => "" |.some val => s!"{n.ceilLog2}'d{val}" -- Add width annotation
       return .literal lit
     | ``BitVec.mul =>
       let #[_n, x, y] := args | throwError invalidNumArgs  ()
