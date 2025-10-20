@@ -102,12 +102,38 @@ def whnfEvalEta (e:Expr): MetaM Expr := @Hdlean.Meta.whnfEvalEta denylist e
 
 def unfoldDefinitionEval? := fun body => withDenylist denylist (Hdlean.Meta.unfoldDefinitionEval? body)
 
+partial def invalidNumArgs (args: Array α) (fn: Name): MessageData := m!"Invalid number of arguments ({args.size}) for {fn}"
+
+/-- Given a type, return `.some α` if the type is `Mealy α`, otherwise `.none`  -/
+def unwrapMealyType? (e:Expr): Option Expr := do
+  let (fn, args) := e.getAppFnArgs
+  let #[α] := args | .none
+  if fn != ``Mealy then .none
+  return α
+
+/-- Given a type of `Mealy α`, return `α`, otherwise return `e` unchanged. -/
+def unwrapMealyType (e:Expr): Expr := unwrapMealyType? e |>.getD e
+/-- `unwrapMealyType` if `(unwrapMealy := true)`, else nop -/
+def unwrapMealyType' (e:Expr) (unwrapMealy := true): Expr := if unwrapMealy then unwrapMealyType? e |>.getD e else e
+
+/-- Given a type of `Mealy α`, return `α`. Otherwise throw -/
+def unwrapEnsuringMealyType [MonadError n] [Monad n] (e:Expr): n Expr := do
+  let (fn, args) := e.getAppFnArgs
+  if fn != ``Mealy then throwError "HDLean Internal Error: unwrapEnsuringMealyType: fn = {fn} != Mealy in {e}"
+  let #[α] := args | throwError invalidNumArgs args fn
+  return α
+
 /-- A function is synthesizable if all arguments and the return type are synthesizable. This means that they either can be erased (`Sort _`) or have a known unboxed size. This also works for a function with 0 args (a type). -/
 -- TODO, this should take a flag for if unwrapping Mealy when checking synthesizable. Then we have `synthesizable α (mealy:=false) → synthesizable (Mealy α) (mealy:=true)`. This enables saying `α → Mealy β` is synthesizable (if `α` and `β` are), but `α → Mealy (Mealy β)` is not. Maybe call it `time_dim` where `time_dim` starts at `1` since we have `1` dimension of time and then inside a `Mealy` the time_dim goes to `0`, since we have no time dimension left? Then everything is implicitly constant across remaining unspecified time dimensions.
-def forallIsSynthesizable (type:Expr): MetaM Bool := forallTelescope type fun args body => do
+def forallIsSynthesizable (type:Expr) (unwrapMealy := false): MetaM Bool := forallTelescope type fun args body => do
   let is_synthesizable (type:Expr): MetaM Bool := do
     -- If has unboxed size then it can be represented with that size in synthesis.
     if (←(bitShape? type)).isSome then return true
+    -- If `unfoldMealy` is `true`, then should also check the unfoldedType
+    if unwrapMealy then
+      if let .some type := unwrapMealyType? type then
+        if (←(bitShape? type)).isSome then
+          return true
     -- Otherwise, is not synthesizable
     return false
   (← args.mapM (·.fvarId!.getType)).push body
@@ -171,15 +197,6 @@ field: {fieldIdx}"
   addItem <| .assignment (.identifier name) (.bitSelect constructedVal [start:start+width])
   return .identifier name
 
-
-partial def invalidNumArgs (args: Array α) (fn: Name): MessageData := m!"Invalid number of arguments ({args.size}) for {fn}"
-
-/-- Given a type of `Mealy α`, return `α` -/
-partial def unwrapMealyType [MonadError n] [Monad n] (e:Expr): n Expr := do
-  let (fn, args) := e.getAppFnArgs
-  let #[α] := args | throwError invalidNumArgs args fn
-  return α
-
 mutual
 /-- Compiles a projection expression `Expr.proj` (e.g., `a.1`) for structures and single-ctor inductives -/
 partial def compileExprProj (typeName:Name) (idx:Nat) (struct:Expr) : CompilerM ValueExpr := do
@@ -211,13 +228,14 @@ extra args = {args[recursor.getMajorIdx+1:]}"
   -- If the type depends on the major premise's values this will fail, otherwise whnf will simplify to the monomorphic type. The `+1` is for the major argument.
   let retType ← whnfEvalEta <| mkAppN motive args[recursor.getFirstIndexIdx:recursor.getFirstIndexIdx+recursor.numIndices+1]
   trace[hdlean.compiler.compileRecursor] "retType = {retType}"
+  let retType := unwrapMealyType retType
   -- ZST: rec eliminates to Prop
   if retType.isProp then return .zst
   let minors := args[recursor.getFirstMinorIdx:recursor.getFirstIndexIdx].toArray
   if !(← forallIsSynthesizable retType) then throwError "Return type of motive not synthesizable: {retType}"
   trace[hdlean.compiler.compileRecursor] "compiling major val"
   let majorVal ← compileValue major
-  let majorType ← inferType major
+  let majorType := unwrapMealyType <|← inferType major
   let majorInductVal ← Lean.getConstInfoInduct recursor.getMajorInduct
   trace[hdlean.compiler.compileRecursor] "compiling {minors.size} ctor cases"
   let cases ← minors.mapIdxM fun idx minor => do
@@ -324,7 +342,7 @@ partial def compileMealyMerge (e:Expr) : CompilerM (ValueExpr × HWType) := do
   let #[_α,_β,a,b] := args | throwError invalidNumArgs ()
   let aVal ← compileValue a
   let bVal ← compileValue b
-  let eType ← unwrapMealyType (← inferType e)
+  let eType ← unwrapEnsuringMealyType (← inferType e)
   let .some retShape ← bitShape? eType | throwError "unwrapped return type of Mealy.merge has unknown bit shape: {eType}"
   let retHWType ← getHWType retShape
   return (.concatenation [aVal, bVal], retHWType)
@@ -344,8 +362,14 @@ partial def withLetFromMealy (name : Name) (e : Expr) (k : Expr → CompilerM α
     trace[debug] "fVar = {fVar}"
       k fVar
   let (fn, args) := e.getAppFnArgs
-  if fn == Name.anonymous then throwError "TODO: {e} head has no name"
-  if fn == ``Mealy.pure then
+  if fn == Name.anonymous then
+    unless e.getAppFn.isFVar do throwError "HDLean Internal Error: non-fvar function {e.getAppFn} in {e}"
+    trace[debug] "withLetFromMealy fvar of {e}"
+    -- TODO, should this be done with an explicit `cast` of something involving `Eq.rec`?
+    -- Unwrap `Mealy` from type.
+    withLetDecl name (← unwrapEnsuringMealyType (← inferType e)) e fun fVar => do
+    k fVar
+  else if fn == ``Mealy.pure then
     trace[debug] "withLetFromMealy pure"
     let #[_α, a] := args | throwError invalidNumArgs args fn
     trace[debug] "withLetFromMealy pure of {a}"
@@ -659,7 +683,7 @@ partial def compileFun (fn: Expr): CompilerM Module := do
 args = {args}
 body = {body}"
   -- If body isn't synthesizable then unfold until it is. Since the top-level function is required to be monomorphic at some point the unfolding will expose a synthesizable signature (worst case by unfolding everything to primitives).
-  let (hasClkRst, compiledBody?) ← if !(← forallIsSynthesizable (← inferType body)) then
+  let (hasClkRst, compiledBody?) ← if !(← forallIsSynthesizable (← inferType body) (unwrapMealy:=true)) then
     let err := fun () body => m!"Function has an unsynthesizable interface (unsynthesizable argument or return type) and this can't be resolved by unfolding the function body:"
       ++ MessageData.nestD m!"{Std.Format.line}body={body},{Std.Format.line}args={args}"
     let body' ← whnfEvalEta body
@@ -684,7 +708,7 @@ body = {body}"
     else pure (false, Option.none)
   let retHWType ← match compiledBody? with
   | .none =>
-    let retTy ← Meta.returnTypeV body args
+    let retTy := unwrapMealyType <|← Meta.returnTypeV body args
     let .some shape ← bitShape? retTy | throwError "return type unknown bit shape {retTy}"
     getHWType shape
   | .some (_, compiledBodyHWType) => pure compiledBodyHWType
@@ -703,7 +727,7 @@ body = {body}"
     }
   -- Convert function arguments to module ports.
   for arg in args do
-    let argType ← inferType arg
+    let argType := unwrapMealyType <|← inferType arg
     let .some argShape ← bitShape? argType | throwError "Argument is unsynthesizable: {arg}"
     ports := ports.push {
       name := ← arg.fvarId!.getUserName,
@@ -1216,13 +1240,13 @@ def use_conditional_func (s:Mealy Bool): Mealy (Bool) := s.scan fun i (st:Bool) 
 | .true => (conditional_func true i, not st)
 
 -- #eval do println! ← emit (``conditional_func)
--- #eval do println! ← emit (``use_conditional_func)
-def conditional_func' (_b:Bool) (_i: Bool): Bool := true
-def use_conditional_func' (s:Mealy Bool): Mealy (Bool) := s.scan fun i (st:Bool) => match st with
-| .false => (conditional_func' false i, not st)
-| .true => (conditional_func' true i, not st)
--- set_option trace.hdlean.compiler true in
--- #eval do println! ← emit (``use_conditional_func')
+#eval do println! ← emit (``use_conditional_func)
+
+/-
+Interestingly, seems like universe levels combined with `Mealy.pure` only working for `Type` prevents this situation (nested `Mealy` using synthesizable constructors) from working. I don't know if this is fortuitous and useful or not. Maybe `Mealy.pure` should accept `Type u` instead of `Type`, in which case this is no longer prevented.
+def use_conditional_func' (s:Mealy Bool): Mealy <| Mealy (Bool) := (s.scan fun i (st:Bool) => match st with
+| .false => (Mealy.scan <| conditional_func false i, not st)
+| .true => (Mealy.pure <| conditional_func true i, not st)) -/
 
 def mealy_synthesizable_of_function := Mealy.pure id
   |>.scan (fun (f: BitVec 3 → BitVec 3) (st: Bool) => ((f . + (if st then 1 else 0)), not st))
