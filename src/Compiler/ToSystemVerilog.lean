@@ -71,6 +71,9 @@ attribute [implemented_by_hw instDecidableLtBitVecHW] instDecidableLtBitVec
 attribute [implemented_by_hw instDecidableLeBitVecHW] instDecidableLeBitVec
 
 def denylist: NameSet := (NameSet.empty
+  |>.insert ``Nat.shiftLeft
+  |>.insert ``Nat.shiftRight
+  |>.insert ``Nat.mod
   |>.insert ``BitVec.add
   |>.insert ``BitVec.sub
   |>.insert ``BitVec.mul
@@ -476,6 +479,21 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
             compileValue <| mkAppN f args
           | .none => throwError "Unknown free variable in application head: {← fvarId.getUserName}={fvarId}"
       else throwError "HDLean Internal Error: non-constant and non free application: {e}"
+    | ``Nat.shiftLeft =>
+      let #[n, m] := args | throwError invalidNumArgs ()
+      let n ← compileValue n
+      let m ← compileValue m
+      return .binaryOp .sll n m
+    | ``Nat.shiftRight =>
+      let #[n, m] := args | throwError invalidNumArgs ()
+      let n ← compileValue n
+      let m ← compileValue m
+      return .binaryOp .srl n m
+    | ``Nat.mod =>
+      let #[n, m] := args | throwError invalidNumArgs ()
+      let n ← compileValue n
+      let m ← compileValue m
+      return .binaryOp .mod n m
     | ``BitVec.ofFin =>
       let #[_w, toFin] := args | throwError invalidNumArgs ()
       let val ← compileValue toFin
