@@ -442,7 +442,7 @@ instance : Coe (BitVec n) (Vector Bool n) := ⟨BitVec.toVector⟩
 def Vector.modifyM [Monad m] (xs : Vector α n) (i : Fin n) (f : α → m α) : m (Vector α n) := do
   let v   := xs[i]
   let v ← f v
-  pure <| xs.set' i v
+  pure <| xs.set i v
 def Vector.modify (xs : Vector α n) (i : Fin n) (f : α → α) : Vector α n :=
   Id.run <| Vector.modifyM xs i (pure <| f ·)
 def Vector.modifyOp (xs : Vector α n) (idx : Fin n) (f : α → α) : Vector α n :=

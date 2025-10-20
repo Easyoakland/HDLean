@@ -50,7 +50,7 @@ def writeRegister (regFile:RegisterFile) (reg:Reg) (value:Word) : RegisterFile :
     change reg-1 < 31
     bv_omega
   )
-  regFile.set' i value
+  regFile.set i value
 
 def registersT (register_file:RegisterFile) (r_reg_a:Reg) (r_reg_b:Reg) (reg_w_en:Enable) (w_reg_dst:Reg) (reg_w_data:Word) : (RegisterFile× Word× Word) :=
  (register_file', r_reg_a_data, r_reg_b_data)
