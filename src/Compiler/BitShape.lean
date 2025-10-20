@@ -52,6 +52,13 @@ def totalWidth : BitShape → Nat
   | .struct fields => fields.foldl (init := 0) (fun acc s => acc + s.totalWidth)
   | .union alts => alts.size.ceilLog2 + (alts.foldl (init := 0) (fun acc alt => acc.max alt.totalWidth))
 
+def boolBitShape : BitShape := Hdlean.BitShape.union #[
+    Hdlean.BitShape.struct #[],
+    Hdlean.BitShape.struct #[]
+  ]
+
+def atom (bitWidth : Nat): BitShape := .union #[.struct <| Array.replicate bitWidth boolBitShape]
+
 instance : Inhabited BitShape where
   default := .union #[]
 
@@ -139,16 +146,16 @@ mutual
             if fn = ``BitVec then
               let length := args[0]!
               let length ← unsafe Meta.evalExpr Nat (.const ``Nat []) length
-              return some <| BitShape.struct <| Array.replicate length (← bitShape (.const ``Bool [])).get!
+              return some <| BitShape.union #[BitShape.struct #[atom length]]
             else if fn = ``Fin then
               let upper_bound := args[0]!
               let upper_bound ← unsafe Meta.evalExpr Nat (.const ``Nat []) upper_bound
               let upper_bound := upper_bound.ceilLog2
-              return some <| BitShape.struct <| Array.replicate upper_bound (← bitShape (.const ``Bool [])).get!
+              return some <| BitShape.union <| #[BitShape.struct #[atom upper_bound, .union #[]]]
             else if fn = ``Vector then
               let .some shape_of_element ← bitShape args[0]! | return .none
               let length ← unsafe Meta.evalExpr Nat (.const ``Nat []) args[1]!
-              return some <| BitShape.struct <| Array.replicate length (shape_of_element)
+              return some <| BitShape.union #[BitShape.struct #[.union #[.struct <| Array.replicate length shape_of_element], .union #[]]]
           catch _ex => return none
 
           inductiveBitShape val args

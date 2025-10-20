@@ -480,6 +480,9 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       let #[_w, toFin] := args | throwError invalidNumArgs ()
       let val ← compileValue toFin
       return val
+    | ``BitVec.toFin =>
+      let #[_w, self] := args | throwError invalidNumArgs ()
+      compileValue self
     | ``Fin.mk =>
       let #[n, val, _isLt] := args | throwError invalidNumArgs ()
       let val ← compileValue val
@@ -487,6 +490,9 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
         catch e => throwError "Can't compile Fin.mk: can't evaluate upper bound = '{n}': {e.toMessageData}"
       let lit := match val.emit with |.none => "" |.some val => s!"{n.ceilLog2}'d{val}" -- Add width annotation
       return .literal lit
+    | ``Fin.val =>
+      let #[_n, self] := args | throwError invalidNumArgs ()
+      compileValue self
     | ``BitVec.mul =>
       let #[_n, x, y] := args | throwError invalidNumArgs  ()
       let x ← compileValue x
