@@ -1,0 +1,15 @@
+name = "RISCV"
+version = "0.1.0"
+defaultTargets = ["riscv"]
+
+[[require]]
+path = "../../src"
+name = "hdlean"
+
+[[lean_lib]]
+name = "RISCV"
+
+[[lean_exe]]
+name = "riscv"
+root = "Main"
+supportInterpreter = true # needed for evalConst

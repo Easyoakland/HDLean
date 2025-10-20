@@ -1,0 +1,1 @@
+5-stage almost RISC-V core designed like: https://github.com/Easyoakland/RISCV-HDL-Comparison
