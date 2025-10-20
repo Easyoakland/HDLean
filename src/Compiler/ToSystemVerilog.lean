@@ -277,8 +277,9 @@ partial def compileCtor (ctor : ConstructorVal) (levels: List Level) (args : Arr
   match ctor.name with
   | ``Vector.mk =>
     let #[_α, _n, toArray, _h] := args | throwError invalidNumArgs args ctor.name
-    let (fn, args) := (← whnfEvalEta toArray).getAppFnArgs
-    assert! fn == ``Array.mk
+    let e := (← whnfEvalEta toArray)
+    let (fn, args) := e.getAppFnArgs
+    unless fn == ``Array.mk do throwError "non-canonical Array fn != Array.mk, fn == {fn} in {e}"
     let #[_α, toList] := args | throwError invalidNumArgs args ``Array.mk
     let vals ← compileList toList
     return .concatenation vals
@@ -612,7 +613,7 @@ partial def compileValue (e : Expr) : CompilerM ValueExpr := do
       match ← Lean.getConstInfo fn with
       | .recInfo val => compileRecursor val args
       | .ctorInfo val => compileCtor val e.getAppFn.constLevels! args
-      | _ => throwError "Unsupported function application: {e}"
+      | _ => throwError "Unsupported function application of `{fn}`: {e}"
   | .lit e => return .literal <| match e with |.natVal n => s!"{n}" |.strVal s => s
   | .proj typeName idx s =>
     match typeName, idx with
