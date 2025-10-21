@@ -262,8 +262,28 @@ def Mealy.merge (a : Mealy α) (b : Mealy β): Mealy (α × β) where
 
 @[inline] instance [HMul α β γ] : HMul (Mealy α) (Mealy β) (Mealy γ) where
   hMul a b := (.*.) <$> a <*> b
+@[inline] instance [HDiv α β γ] : HDiv (Mealy α) (Mealy β) (Mealy γ) where
+  hDiv a b := (./.) <$> a <*> b
+@[inline] instance [HMod α β γ] : HMod (Mealy α) (Mealy β) (Mealy γ) where
+  hMod a b := (.%.) <$> a <*> b
+@[inline] instance [HPow α β γ] : HPow (Mealy α) (Mealy β) (Mealy γ) where
+  hPow a b := (HPow.hPow) <$> a <*> b
 @[inline] instance [HAdd α β γ] : HAdd (Mealy α) (Mealy β) (Mealy γ) where
   hAdd a b := (.+.) <$> a <*> b
+@[inline] instance [HSub α β γ] : HSub (Mealy α) (Mealy β) (Mealy γ) where
+  hSub a b := (.-.) <$> a <*> b
+@[inline] instance [HShiftLeft α β γ] : HShiftLeft (Mealy α) (Mealy β) (Mealy γ) where
+  hShiftLeft a b := (.<<<.) <$> a <*> b
+@[inline] instance [HShiftRight α β γ] : HShiftRight (Mealy α) (Mealy β) (Mealy γ) where
+  hShiftRight a b := (.>>>.) <$> a <*> b
+@[inline] instance [HAnd α β γ] : HAnd (Mealy α) (Mealy β) (Mealy γ) where
+  hAnd a b := (.&&&.) <$> a <*> b
+@[inline] instance [HOr α β γ] : HOr (Mealy α) (Mealy β) (Mealy γ) where
+  hOr a b := (.|||.) <$> a <*> b
+@[inline] instance [HXor α β γ] : HXor (Mealy α) (Mealy β) (Mealy γ) where
+  hXor a b := (.^^^.) <$> a <*> b
+@[inline] instance [Neg α]: Neg (Mealy α) where
+  neg a := (-.) <$> a
 
 /-- Make a mealy machine which takes no input from its transition function and an initial state. -/
 def Mealy.corec {α σ :Type _} (f : σ → α × σ) (st : σ) : Mealy α where
