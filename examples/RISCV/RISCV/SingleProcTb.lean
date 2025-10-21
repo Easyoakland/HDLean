@@ -68,12 +68,17 @@ def singleProcTb : Mealy (Option (Word × Ptr)):=
     (memWrite,nextInstr,dataMem,processorState)
 
 open NotSynthesizable in
-#eval simulate singleProcTb (Array.replicate 100 ()) |>.filterMap fun x =>
+#eval simulate singleProcTb 100 |>.filterMap fun x =>
   if x.1.value.isNone then .none else
   .some <| x.1.repr 0 |> ToString.toString
 
 open NotSynthesizable in
-def Main (n:Nat) := simulate singleProcTb (Array.replicate n ()) |>.filterMap fun x =>
+#eval simulate' singleProcTb 100 |>.filterMap fun x =>
+  if x.1.isNone then .none else
+  .some <| x.1 |> ToString.toString
+
+open NotSynthesizable in
+def Main (n:Nat) := simulate singleProcTb n |>.filterMap fun x =>
   if x.1.value.isNone then .none else
   .some <| x.1.repr 0
   |> ToString.toString

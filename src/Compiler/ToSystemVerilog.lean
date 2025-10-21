@@ -1099,9 +1099,9 @@ def cyclic_fibonacci_series : Mealy (BitVec n) :=
       (prev2, (prev1,next)))
 
 open NotSynthesizable in
-#eval simulate (cyclic_fibonacci_series (n:=16)) (Array.replicate 20 ()) |>.take 20 |>.map fun x => x.fst.value
+#eval simulate (cyclic_fibonacci_series (n:=16)) 20 |>.take 20 |>.map fun x => x.fst.value
 open NotSynthesizable in
-#eval simulate (cyclic_fibonacci_series (n:=16)) (Array.replicate 20 ()) |>.take 20 |>.map fun x => x.fst.repr' 0 (inst:=by rw [x.snd.left]; reduceAll; exact inferInstance) |> ToString.toString
+#eval simulate (cyclic_fibonacci_series (n:=16)) 20 |>.take 20 |>.map fun x => x.fst.repr' 0 (inst:=by rw [x.snd]; reduceAll; exact inferInstance) |> ToString.toString
 
 def cyclic_fibonacci_series_mono := cyclic_fibonacci_series (n:=18)
 #eval do println! ← emit (``cyclic_fibonacci_series_mono)
@@ -1132,7 +1132,7 @@ def delay4_mono := delay4 (α:=BitVec 3) (cyclic_fibonacci_series)
 #eval do println! ← emit (``delay4_mono)
 
 open NotSynthesizable in
-#eval! simulate (delayN 3 (α:=BitVec 14) cyclic_fibonacci_series) (Array.replicate 20 (cast sorry ())) |>.take 20 |>.map fun x => x.fst.value |> ToString.toString
+#eval! simulate (delayN 3 (α:=BitVec 14) cyclic_fibonacci_series) 20 |>.take 20 |>.map fun x => x.fst.value |> ToString.toString
 -- TODO, make a `reduce` function using `Hdlean.Meta.whnfEvalEta` so it uses `._unsafe.rec` in order to get stuff like `delay4_mono.σ` to actually evaluate instead of getting stuck in `Acc.rec` madness.
 
 def mealy_merge := Mealy.pure 3#2 |>.merge <| (Mealy.pure ()).scan fun () (st:BitVec 4) => (st+1,st*2)
@@ -1187,7 +1187,7 @@ unsafe def lut_mealy (vals: Array α) [Inhabited α]: Mealy α :=
 #eval (0#3-1) < (1#3-1)
 
 open NotSynthesizable in
-#eval! simulate (lut_mealy #[1,2,3,4]) (Array.replicate 20 ()) |>.map fun x => x.fst.value
+#eval! simulate (lut_mealy #[1,2,3,4]) 20 |>.map fun x => x.fst.value
 unsafe def lut_mealy_mono := lut_mealy #[(1:BitVec 3),2,3,4]
 -- This won't work until BitVec arithmetic like functions (in this case sub and eq) reduce when fully-applied without free/meta vars (TODO possibly also require canonical form?) even if in the denylist. Because they aren't unfolded this compiles both halves of the if statement forever when it should actually simplify to the recursive half repeatedly with the non-recursive half at the end. It should be able to unfold at compile time since `n` is known at compile time and `n-1` and `n=0` control if the function recurses at all.
 -- set_option trace.hdlean.compiler true in
@@ -1254,8 +1254,6 @@ def mealy_synthesizable_of_function := Mealy.pure id
   |>.merge (Mealy.pure id |>.scan fun f () => (id f, ()))
   |>.scan (fun (f,f2) st => (f2 <| f st, st+(1:BitVec 3)))
 #check mealy_synthesizable_of_function
-set_option trace.hdlean.compiler true in
-set_option trace.debug true in
 #eval do println! ← emit (``mealy_synthesizable_of_function)
 
 end Hdlean.Compiler
