@@ -257,20 +257,16 @@ def Mealy.merge (a : Mealy α) (b : Mealy β): Mealy (α × β) where
     ((a', b'), (aSt', bSt'))
 end Primitive
 
-/-- Separate a `Mealy` into a tuple of `Mealy`
+/-- Separate a `Mealy` of a tuple into a tuple of `Mealy`.
+
+Note: In software simulation this runs `m` twice, once for the `fst` projection, and once for the `snd` projection, so it is more efficient to `map` if possible.
 
 ```txt
-┌──────────────┐
-│┌─────────┐   │
-││┌───┐    │   │
-│││ a │──┐ │ ┌─│->
-││└───┘  │ │ │ │
-││       ╞═│═╡ │
-││┌───┐  │ │ │ │
-│││ b │──┘ │ └─│->
-││└───┘    │   │
-│└─────────┘   │
-└──────────────┘
+┌────────┐
+│┌───┐ ┌─│─>
+││ m │═╡ │
+│└───┘ └─│─>
+└────────┘
 ```
 -/
 def Mealy.unmerge (m : Mealy (α × β)) : Mealy α × Mealy β :=
