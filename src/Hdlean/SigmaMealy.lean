@@ -205,6 +205,17 @@ section Primitive
 
 /-- In hardware this corresponds to a new Mealy machine made with a new registered state `σ` which merges the output of machine `s` and the previous `σ` state of the new machine, using `f`.
 
+```txt
+┌────────────────┐
+│        ┌───┐   │
+│       ┌│ σ │<┐ │
+│       │└───┘ │ │
+│┌───┐  └>┌───┐┘ │
+││ s │--->│ f │--│->
+│└───┘    └───┘  │
+└────────────────┘
+```
+
 If `s` outputs values `[1,2,3,4,...]`
 
 Then this machine outputs `[reset, f 1 reset, f 2 (f 1 reset), f 3 (f 2 (f 1 reset)), ...]`
@@ -222,7 +233,21 @@ def Mealy.scan {α β σ: Type u} (s : Mealy α) (f : α → σ → (β×σ)) (r
     let (b, st_fst') := f a st.fst
     (b, (st_fst', st_snd'))
 
-/-- Combine two separate `Mealy` into one tuple. -/
+/-- Combine two separate `Mealy` into one tuple.
+
+
+```txt
+┌─────────┐
+│┌───┐    │
+││ a │──┐ │
+│└───┘  │ │
+│       ╞═│═>
+│┌───┐  │ │
+││ b │──┘ │
+│└───┘    │
+└─────────┘
+```
+-/
 def Mealy.merge (a : Mealy α) (b : Mealy β): Mealy (α × β) where
   σ := a.σ × b.σ
   state := (a.state, b.state)
@@ -232,13 +257,39 @@ def Mealy.merge (a : Mealy α) (b : Mealy β): Mealy (α × β) where
     ((a', b'), (aSt', bSt'))
 end Primitive
 
-/-- Separate a `Mealy` into a tuple of `Mealy` -/
+/-- Separate a `Mealy` into a tuple of `Mealy`
+
+```txt
+┌──────────────┐
+│┌─────────┐   │
+││┌───┐    │   │
+│││ a │──┐ │ ┌─│->
+││└───┘  │ │ │ │
+││       ╞═│═╡ │
+││┌───┐  │ │ │ │
+│││ b │──┘ │ └─│->
+││└───┘    │   │
+│└─────────┘   │
+└──────────────┘
+```
+-/
 def Mealy.unmerge (m : Mealy (α × β)) : Mealy α × Mealy β :=
   (m.scan fun m () => (m.1,()),
     m.scan fun m () => (m.2,()))
 
-/-- Map a `Mealy` with a function.  -/
-def Mealy.map (f : α → β) (m : Mealy α) : Mealy β := m.scan fun m () => (f m, ())
+/-- Map a `Mealy` with a function.
+
+In hardware this corresponds to appending the circuit corresponding to the function after the given `s`.
+
+```txt
+┌─────────────┐
+│┌───┐  ┌───┐ │
+││ s │->│ f │-│->
+│└───┘  └───┘ │
+└─────────────┘
+```
+ -/
+def Mealy.map (f : α → β) (s : Mealy α) : Mealy β := s.scan fun m () => (f m, ())
 
 /- def Mealy.scan2 {α α2 β σ: Type u} (s : Mealy α) (s2 : Mealy α2) (f : α → α2 → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : Mealy β where
   σ := (σ × s.σ × s2.σ)
@@ -282,7 +333,19 @@ def Mealy.map (f : α → β) (m : Mealy α) : Mealy β := m.scan fun m () => (f
 @[inline] instance [Neg α]: Neg (Mealy α) where
   neg a := (-.) <$> a
 
-/-- Make a mealy machine from its transition function and an initial state. -/
+/-- Make a mealy machine from its transition function and an initial state.
+
+```txt
+┌────────┐
+│ ┌───┐  │
+│┌│ σ │<┐│
+││└───┘ ││
+│└>┌───┐┘│
+│  │ f |-│->
+│  └───┘ │
+└────────┘
+```
+-/
 def Mealy.corec {α σ :Type _} (f : σ → α × σ) (st : σ) : Mealy α where
   σ := σ
   state := st
