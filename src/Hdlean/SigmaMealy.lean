@@ -607,3 +607,56 @@ def Mealy.IsBisimulation (a b : Mealy α) (R : (a:Mealy α) → (b:Mealy α) →
     ∧ R (a.next.2) (b.next.2)
 
 def Mealy.EqualNow (a b : Mealy α) : Prop := a.value = b.value
+end MealyA
+
+open NotSynthesizable in
+def QuotientMealy.pointwise_eq (a b : Mealy O) : Prop := ∀ i, (a.get i).1 = (b.get i).1
+
+instance {O: Type u} : Equivalence (QuotientMealy.pointwise_eq (O:=O)) where
+    refl _ _ := rfl
+    symm h i := Eq.symm (h i)
+    trans a b i := Eq.trans (a i) (b i)
+
+open NotSynthesizable in
+instance instSetoid_pointwise_eq : Setoid (Mealy O) where
+  r := QuotientMealy.pointwise_eq
+  iseqv := instEquivalenceMealyPointwise_eq
+
+abbrev QMealy (O : Type u) := Quotient (instSetoid_pointwise_eq (O:=O))
+
+namespace QMealy
+def _root_.Quotient.map [ra:Setoid α] [rb:Setoid β] (q:Quotient ra) (f : α → β) (h:∀ a b, a ≈ b → f a ≈ f b): Quotient rb := q.liftOn (fun x => Quotient.mk' <| f x) (fun a b h2 => Quotient.sound (h a b h2))
+
+def scan {α β σ: Type u} (s : QMealy α) (f : α → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : QMealy β := s.map (·.scan f reset) (fun a b h i => by rw [scan_get']; exact h)
+
+protected def pure (a : α) : QMealy α := Quotient.mk' <| Mealy.pure a
+
+section FromMathlib
+@[simp] theorem Quot.liftOn_mk (a : α) (f : α → γ) (h : ∀ a₁ a₂, r a₁ a₂ → f a₁ = f a₂) :
+    Quot.liftOn (Quot.mk r a) f h = f a :=
+  rfl
+@[simp] theorem Quotient.liftOn_mk {s : Setoid α} (f : α → β) (h : ∀ a b : α, a ≈ b → f a = f b) (x : α) :
+    Quotient.liftOn (Quotient.mk s x) f h = f x :=
+  rfl
+end FromMathlib
+
+def merge (a : QMealy α) (b : QMealy β): QMealy (α × β) :=
+  a.liftOn (fun a => b.map (fun b => a.merge b)
+  (fun x y h i => by
+    simp
+    admit
+  ))
+  (fun x y h => by
+    simp [Quotient.map, Quotient.mk']
+    induction b using Quotient.ind
+    next b =>
+    simp
+    apply Quotient.sound
+    intro i
+    admit
+  )
+
+open NotSynthesizable Hdlean in
+def corec {α σ :Type _} (f : σ → α × σ) (st : σ) : QMealy α := Quotient.mk' <| Mealy.corec f st
+
+end QMealy
