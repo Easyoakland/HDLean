@@ -66,6 +66,7 @@ def signal_freq [HasDomain dom] (s:Signal' dom O): Nat := HasDomain.dom dom |>.f
 end IndirectDomain -/
 
 /-- Mealy/Moore hybrid machine with outputs of `O` with state `Mealy.σ` -/
+-- While not currently enforced, it is assumed that `σ` and `transition` don't change.
 structure Mealy (O : Type u) where
   σ : Type u
   /-- The current state of the machine.
@@ -77,9 +78,9 @@ structure Mealy (O : Type u) where
 attribute [inline] Mealy.transition -- TODO I don't think this does anything
 
 /-- The current output value at the current clock cycle -/
-def Mealy.output (m:Mealy O) : O := m.transition m.state |>.fst
+@[simp] abbrev Mealy.output (m:Mealy O) : O := m.transition m.state |>.fst
 
-@[inherit_doc Mealy.output]
+@[inherit_doc Mealy.output, simp]
 abbrev Mealy.value := @Mealy.output
 
 @[inline, reducible]
@@ -125,7 +126,7 @@ def Mealy.next (m : Mealy α) : (α× Mealy α) :=
   let (o, st) := m.transition m.state
   ⟨o, m.σ, st, m.transition⟩
 
-def Mealy.get (n:Nat) (m : Mealy α) : (α× Mealy α) := match n with
+@[simp] def Mealy.get (n:Nat) (m : Mealy α) : (α× Mealy α) := match n with
   | 0 => (m.value, m)
   | p+1 => get p m.next.snd
 
@@ -198,7 +199,7 @@ end NotSynthesizable
 namespace Hdlean -- re-open the top-level Hdlean namespace now that we're done with NotSynthesizable.
 
 section Primitive
-@[inline] def Mealy.pure (a : α) : Mealy α where
+@[inline] protected def Mealy.pure (a : α) : Mealy α where
   σ := Unit
   state := ()
   transition _ := (a, ())
@@ -329,6 +330,9 @@ def Mealy.map (f : α → β) (s : Mealy α) : Mealy β := s.scan fun m () => (f
 @[inline] instance [Neg α]: Neg (Mealy α) where
   neg a := (-.) <$> a
 
+end Hdlean
+namespace NotSynthesizable.Hdlean
+open _root_.Hdlean
 /-- Make a mealy machine from its transition function and an initial state.
 
 ```txt
@@ -351,13 +355,82 @@ def Mealy.destruct (s : Mealy β) : β × Mealy β :=
   let (o,st') := s.transition s.state
   (o, ⟨s.σ,st',s.transition⟩)
 
-@[simp] theorem destruct_eq_next : @NotSynthesizable.Hdlean.Mealy.next = @Mealy.destruct := rfl
+def Mealy.cons {α : Type u} (a : α) (s : Mealy α) : Mealy α := Mealy.corec (fun
+  | (true, sSt) => (a, (false, sSt))
+  | (false, sSt) => let (o, sSt') := s.transition sSt; (o, (false, sSt'))
+) (true, s.state)
 
-@[simp] theorem Mealy.destruct_corec (f : α → β × α) (a : α) :
+open NotSynthesizable Mealy in
+#eval simulate' (Mealy.cons 42 (corec (fun st => (st,st+1)) 0)) 10 |>.map (·.fst)
+
+-- def Mealy.corec.scan {α β σ: Type u} (s : Mealy α) (f : α → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : Mealy β :=
+
+end NotSynthesizable.Hdlean
+
+namespace Hdlean
+section Thms
+open NotSynthesizable Hdlean
+
+@[simp] theorem next_eq_destruct : @Mealy.next = @Mealy.destruct := rfl
+
+@[simp] theorem output_eq_destruct_fst (m : Mealy O): m.output = m.destruct.fst := by simp [Mealy.destruct]
+
+@[simp] theorem scan_destruct (a : Mealy O) (f : O → σ → (β×σ)) (reset : σ) : (a.scan f reset).destruct = let (o,st) := f a.destruct.fst (reset); (o, (a.destruct.snd).scan f st) := by
+  simp only [Mealy.destruct, Mealy.scan]
+/-
+@[simp] theorem scan_destruct.fst (a : Mealy O) (f : O → σ → (β×σ)) (reset : σ) : (a.scan f reset).destruct.fst = (f a.destruct.fst (reset)).fst := by
+  simp only [Mealy.destruct, Mealy.scan] -/
+
+@[simp] theorem get_succ_eq_get_destruct (a : Mealy O) (i:Nat) : a.get (i+1) = let ith := (a.get i |>.snd); (ith.destruct.snd.destruct.fst, ith.destruct.snd) := by
+  induction i generalizing a
+  case zero => simp
+  case succ i ih =>
+    simp
+    simp at ih
+    rw [ih]
+
+@[simp] theorem get_succ_eq_get_destruct_destruct.fst (a : Mealy O) (i:Nat) : (a.get (i+1)).fst = (a.get i).snd.destruct.snd.destruct.fst := by
+  induction i generalizing a
+  case zero => simp
+  case succ i ih =>
+    simp
+    simp at ih
+    rw [ih]
+
+@[simp] theorem get_destruct_eq_get_succ (m : Mealy O) (i:Nat) : ((m.destruct.snd).get i).fst = (m.get (i+1)).fst := rfl
+
+theorem scan_get (a b : Mealy O) (f : O → σ → (β×σ)) (reset : σ) (h:∀ i, a.get i = b.get i): ∀ i, (a.scan f reset).get i = (b.scan f reset).get i := fun i => by
+  induction i
+  case zero =>
+    have : a = b := congrArg Prod.snd (h 0)
+    rw [this]
+  case succ i ih =>
+    rw [get_succ_eq_get_destruct]
+    rw [ih]
+    rw [← get_succ_eq_get_destruct]
+
+theorem scan_get' (a b : Mealy O) (f : O → σ → (β×σ)) (reset : σ) (h:∀ i, (a.get i).fst = (b.get i).fst): ∀ i, ((a.scan f reset).get i).fst = ((b.scan f reset).get i).fst := fun i => by
+  induction i generalizing a b reset <;> simp
+  case zero =>
+    have : a.destruct.fst = b.destruct.fst := h 0
+    rw [this]
+  case succ i ih =>
+    have : a.destruct.fst = b.destruct.fst := h 0
+    rw [this]
+    apply ih
+    simp
+    intro i'
+    exact h (i' + 1)
+
+open Mealy in
+@[simp] theorem destruct_corec (f : α → β × α) (a : α) :
   (corec f a).destruct = let (b, a) := f a; (b, corec f a) := by
     simp [corec, destruct]
 
-@[simp] theorem Mealy.pure_eq_corec_const (a:α): (Mealy.pure a) = Mealy.corec (a,.) () := by rfl
+open Mealy in
+@[simp] theorem pure_eq_corec_const (a:α): (Mealy.pure a) = Mealy.corec (a,.) () := by rfl
+
+end Thms
 
 @[inline] def Mealy.compose {α β γ : Type} (m1: Mealy (α → β)) (m2: Mealy (β → γ)) : Mealy (α → γ) := m1.merge m2 |>.map (fun (m1,m2) => m2 ∘ m1)
 /-  where
