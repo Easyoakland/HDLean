@@ -375,6 +375,12 @@ open NotSynthesizable Hdlean
 
 @[simp] theorem scan_destruct (a : Mealy O) (f : O → σ → (β×σ)) (reset : σ) : (a.scan f reset).destruct = let (o,st) := f a.destruct.fst (reset); (o, (a.destruct.snd).scan f st) := by
   simp only [Mealy.destruct, Mealy.scan]
+
+@[simp] theorem merge_destruct (a : Mealy α) (b : Mealy β) : (a.merge b).destruct = let (aO,aSt) := a.destruct; let (bO, bSt) := b.destruct; ((aO,bO), (aSt.merge bSt)) := by
+  simp only [Mealy.destruct, Mealy.merge]
+
+@[simp] theorem pure_destruct (a : α) : (Mealy.pure a).destruct = (a, Mealy.pure a) := rfl
+
 /-
 @[simp] theorem scan_destruct.fst (a : Mealy O) (f : O → σ → (β×σ)) (reset : σ) : (a.scan f reset).destruct.fst = (f a.destruct.fst (reset)).fst := by
   simp only [Mealy.destruct, Mealy.scan] -/
@@ -414,6 +420,14 @@ theorem fst_get_scan_eq_of_fst_get_eq (a b : Mealy O) (f : O → σ → (β×σ)
     simp
     intro i'
     exact h (i' + 1)
+
+@[simp] theorem fst_get_merge_eq_fst_get_fst_get (a : Mealy α) (b : Mealy β) : ∀ i, ((a.merge b).get i).fst = ((a.get i).fst, (b.get i).fst) := fun i => by
+  induction i generalizing a b <;> simp
+  case succ i ih => apply ih
+
+@[simp] theorem fst_get_pure_eq_self (a : α) : ∀ i, ((Mealy.pure a).get i).fst = a := fun i => by
+  induction i <;> simp
+  case succ i ih => apply ih
 
 open Mealy in
 @[simp] theorem destruct_corec (f : α → β × α) (a : α) :
@@ -826,16 +840,17 @@ def merge (a : QMealy α) (b : QMealy β): QMealy (α × β) :=
   a.liftOn (fun a => b.map (fun b => a.merge b)
   (fun x y h i => by
     simp
-    admit
+    exact h i
   ))
   (fun x y h => by
-    simp [Quotient.map, Quotient.mk']
+    simp only [Quotient.map, Quotient.mk']
     induction b using Quotient.ind
     next b =>
-    simp
+    simp only [Quotient.liftOn_mk]
     apply Quotient.sound
     intro i
-    admit
+    simp
+    exact h i
   )
 
 open NotSynthesizable Hdlean in
