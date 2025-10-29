@@ -455,6 +455,204 @@ def increasing: Mealy Nat where
   state := default
   transition s := (s,s+1)
 
+section CachedMealy
+
+-- #check Task.spawn
+#eval
+  let f := fun () => dbg_trace "f"; 1
+  (f (), f (), f ())
+open NotSynthesizable in
+#eval
+  let f := fun () => dbg_trace "f"; 1
+  let m := Mealy.pure () |>.scan fun () f => (f,3)
+  let (m1,m2) := (m,m)
+  let (m1,m2) := m1.merge m2 |>.unmerge
+  let (m1,m2) := m1.merge m2 |>.unmerge
+  let (m1,m2) := m1.merge m2 |>.unmerge
+  let (m1,m2) := m1.merge m2 |>.unmerge
+  (m1.get 3 |>.1,m2.get 3 |>.1)
+
+-- #eval Std.Mutex.tryAtomically
+#eval do
+  let ref ← IO.mkRef 0
+  ref.set 1
+  -- Runtime.forget
+  -- let task := Task.spawn (fun () => (ref.set 2))
+  -- pure task.get
+  -- ref.get
+
+-- open NotSynthesizable in
+-- #eval simulate' (
+--   let m := Thunk.mk fun () => (let v : Nat := .; dbg_trace v; (v,v)) <$> increasing
+--   let (m1,m2) := m.get.unmerge
+--   let (m1,m2) := m1.merge m2 |>.unmerge
+--   let (m1,m2) := m1.merge m2 |>.unmerge
+--   m1.merge m2 |>.map fun (m1,m2) => (m1.get,m2.get)
+-- ) 10
+
+abbrev STRefUnit : Type → Type := ST.Ref Unit
+-- def b : Type → Type := IO.Ref
+
+def castST [inst:Inhabited σ] (st : ST σ α) : ST σ2 α := fun st2 =>
+  match st default with
+  | .ok a _st => .ok a st2
+def runST' [Inhabited σ] (st:ST σ α) : α := runST fun _ => castST st
+
+unsafe inductive CachedMealyCache O σ
+  | some (ref : STRefUnit <| Option (O × σ × (CachedMealyCache O σ)))
+@[instance]
+unsafe def instInhabited : Inhabited (CachedMealyCache O σ) := ⟨runST' (σ:=Unit) do return CachedMealyCache.some <| ← ST.mkRef Option.none⟩
+
+#eval runST fun ty => do
+  let a ← ST.mkRef (σ:=ty) 0
+  let v ← a.get
+  let v' ← a.set ((← a.get) + 1)
+  let v ← a.get
+  pure v
+
+#check IO.mkRef
+#eval unsafe unsafeIO do
+  let v ← IO.mkRef 0
+  v.get
+
+abbrev CachedMealyCache.get := @ST.Ref.get
+
+unsafe structure CachedMealy O extends Mealy O where
+  cache : CachedMealyCache O σ
+
+unsafe structure CachedMealyExplicit (σ O : Type) : Type where
+  /-- The current state of the machine.
+  When defining new `Mealy` machines this should be the reset value. -/
+  state : σ
+  /-- Function which returns the current output and the next state. -/
+  transition : σ → O × σ
+  /-- Cache. When `CachedMealyExplicit` is copied, the cache enables re-using computations for parallel instances.
+  -/
+  cache : CachedMealyCache O σ
+
+unsafe def CoeCachedMealyExplicit (m : CachedMealyExplicit σ O) : (CachedMealy O) where
+  σ := σ
+  state := m.state
+  transition := m.transition
+  cache := m.cache
+
+
+unsafe def CachedMealy.cachedTransition (m : CachedMealy O): m.σ → O × m.σ × CachedMealyCache O m.σ := fun st => runST' (σ:=Unit) do
+  dbg_trace "cached transition"
+  let .some ref := m.cache
+  match ← ref.get with
+  | .some val =>
+    dbg_trace "cache hit"
+    pure (val.1, val.2.1, val.2.2)
+  | .none =>
+    dbg_trace "cache miss"
+    let (o,st) := m.transition st
+    let newCache := default
+    ref.set <| .some (o,st,newCache)
+    pure (o,st,newCache)
+
+unsafe def _root_.NotSynthesizable.CachedMealy.next [ToString O] (m : CachedMealy O) : (O× CachedMealy O) :=
+let ret := runST' (σ:=Unit) (α:=(O× CachedMealyExplicit m.σ O)) do
+  dbg_trace "cached next"
+  match m.cache with
+  | .some ref =>
+    match ← ref.get with
+    | .some val =>
+      dbg_trace "cache hit"
+      return (val.1, CachedMealyExplicit.mk val.2.1 m.transition val.2.2)
+    | .none =>
+      dbg_trace "cache miss"
+      let ret :=
+        let (o, st) := NotSynthesizable.Hdlean.Mealy.next m.toMealy
+        (o, CachedMealy.mk st default)
+      let nextCache := CachedMealyCache.some <| ← ST.mkRef (m:=ST Unit) (σ:=Unit) Option.none
+      ref.set (m:=ST Unit) <| .some (ret.1, ret.2.state, nextCache)
+      return (ret.1, CachedMealyExplicit.mk ret.2.state ret.2.transition nextCache)
+(ret.1,CoeCachedMealyExplicit ret.2)
+
+unsafe def _root_.NotSynthesizable.CachedMealy.merge (a : CachedMealy α) (b : CachedMealy β): CachedMealy (α × β) where
+  σ := a.σ × b.σ
+  state := (a.state, b.state)
+  transition st :=
+    let (a', aSt') := a.transition st.fst
+    let (b', bSt') := b.transition st.snd
+    ((a', b'), (aSt', bSt'))
+  cache := runST' (σ:=Unit) do return CachedMealyCache.some <| ← ST.mkRef <| Option.none
+
+def increasingDbg := increasing.map (dbg_trace "."; .)
+
+open NotSynthesizable in
+#eval do
+  -- let m := CachedMealy.mk increasing (CachedMealyCache.some <| ← ST.mkRef .none)
+  let m := increasingDbg.merge increasingDbg |>.unmerge |>.1
+  let (o1, m) := m.next
+  let (o2, m) := m.next
+  let (o3, m) := m.next
+  let (o4, _) := m.next
+  pure (o1,o2,o3,o4)
+open NotSynthesizable in
+#eval runST' (σ:=Unit) do
+  -- let m := CachedMealy.mk increasing (CachedMealyCache.some <| ← ST.mkRef .none)
+  let m := CachedMealy.mk (increasingDbg.merge increasingDbg |>.unmerge |>.1) (CachedMealyCache.some <| ← ST.mkRef <| .some <| (42,((by reduceAll; exact ((),((),0),((),0)))),default))
+  let (o1, m) := CachedMealy.next m
+  let (o2, m) := CachedMealy.next m
+  let (o3, m) := CachedMealy.next m
+  let (o4, _) := CachedMealy.next m
+  pure (o1,o2,o3,o4)
+
+open NotSynthesizable in
+#eval do
+  -- let m := CachedMealy.mk increasing (CachedMealyCache.some <| ← ST.mkRef .none)
+  let m := (increasingDbg.merge increasingDbg |>.unmerge |>.1)
+  let m := increasingDbg
+  let m2 := increasingDbg
+  let m3 := increasingDbg
+  let (o1, m1) := m.next
+  let (o2, m2) := m2.next
+  let (o3, m3) := m3.next
+  pure (o1,o2,o3)
+
+unsafe def CachedMealy.scan {α β σ: Type} (s : CachedMealy α) (f : α → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : CachedMealy β where
+  σ := (σ × s.σ)
+  state := (reset, s.state)
+  transition st :=
+    let (a, st_snd', _cache) := s.cachedTransition st.2
+    let (b, st_fst') := f a st.fst
+    (b, (st_fst', st_snd'))
+  cache := default
+
+unsafe def CachedMealy.unmerge (m : CachedMealy (α × β)) : CachedMealy α × CachedMealy β :=
+  (m.scan fun m () => (m.1,()),
+    m.scan fun m () => (m.2,()))
+-- def CachedMealy.merge
+open NotSynthesizable in
+#eval runST' (σ:=Unit) do
+  -- let m := CachedMealy.mk increasing (CachedMealyCache.some <| ← ST.mkRef .none)
+  let cacheRef ← ST.mkRef <| Option.none
+  let m := CachedMealy.mk increasingDbg (CachedMealyCache.some <| cacheRef)
+  let m2 := CachedMealy.mk increasingDbg (CachedMealyCache.some <| cacheRef)
+  let m3 := CachedMealy.mk increasingDbg (CachedMealyCache.some <| cacheRef)
+  let (o1, m) := CachedMealy.next m
+  let (o2, m) := CachedMealy.next m2
+  let (o3, m) := CachedMealy.next m3
+  pure (o1,o2,o3)
+open NotSynthesizable in
+#eval runST' (σ:=Unit) do
+  -- let m := CachedMealy.mk increasing (CachedMealyCache.some <| ← ST.mkRef .none)
+  let cacheRef ← ST.mkRef Option.none
+  let m := CachedMealy.mk increasingDbg (CachedMealyCache.some <| cacheRef)
+  let m2 := CachedMealy.mk increasingDbg (CachedMealyCache.some <| cacheRef)
+  let m3 := CachedMealy.mk increasingDbg (CachedMealyCache.some <| cacheRef)
+  let (o3, m3') := CachedMealy.cachedTransition m3 m3.state
+  let (o1, m') := CachedMealy.next m
+  let (o2, m2') := CachedMealy.next m2
+  let (o1', m'') := CachedMealy.next m'
+  let (o4, m2'') := CachedMealy.next m2'
+  let (o1'', m''') := CachedMealy.next m''
+  pure (o1,o2,o3,o4,o1',o1'')
+
+end CachedMealy
+
 def multiplyAccumulate (x y : Mealy Nat) : Mealy Nat where
   σ := (Nat×x.σ× y.σ)
   state := (0, x.state, y.state)
