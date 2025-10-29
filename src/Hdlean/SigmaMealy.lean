@@ -226,6 +226,7 @@ Then this machine outputs `[reset, f 1 reset, f 2 (f 1 reset), f 3 (f 2 (f 1 res
 - `m.scan f 0`
 -/
 -- `by exact` is used because tactic defaults are executed in the context of the calling site, and this enables passing a custom reset either positional or nominal without having to wrap the value in `⟨⟩`.
+-- The reason this is used as a primitive instead of `corec` is because this guarantees the user provided `f` does not depend on the state of `s`, and thus `s` can potentially be synthesized in hardware as a separate module.
 def Mealy.scan {α β σ: Type u} (s : Mealy α) (f : α → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : Mealy β where
   σ := (σ × s.σ)
   state := (reset, s.state)
@@ -330,6 +331,8 @@ def Mealy.map (f : α → β) (s : Mealy α) : Mealy β := s.scan fun m () => (f
 @[inline] instance [Neg α]: Neg (Mealy α) where
   neg a := (-.) <$> a
 
+def Mealy.cons {α : Type u} (a : α) (s : Mealy α) : Mealy α := s.scan (fun s st => (st,s)) a
+
 end Hdlean
 namespace NotSynthesizable.Hdlean
 open _root_.Hdlean
@@ -355,15 +358,10 @@ def Mealy.destruct (s : Mealy β) : β × Mealy β :=
   let (o,st') := s.transition s.state
   (o, ⟨s.σ,st',s.transition⟩)
 
-def Mealy.cons {α : Type u} (a : α) (s : Mealy α) : Mealy α := Mealy.corec (fun
-  | (true, sSt) => (a, (false, sSt))
-  | (false, sSt) => let (o, sSt') := s.transition sSt; (o, (false, sSt'))
-) (true, s.state)
-
-open NotSynthesizable Mealy in
-#eval simulate' (Mealy.cons 42 (corec (fun st => (st,st+1)) 0)) 10 |>.map (·.fst)
-
--- def Mealy.corec.scan {α β σ: Type u} (s : Mealy α) (f : α → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : Mealy β :=
+def increasing: Mealy Nat where
+  σ := Nat
+  state := default
+  transition s := (s,s+1)
 
 end NotSynthesizable.Hdlean
 
@@ -441,19 +439,7 @@ end Thms
     let (o2, m2s) := m2.transition s.snd
     (o2 ∘ o1, (m1s, m2s)) -/
 
-def delay1 [reset: Inhabited α] (s:Mealy α): Mealy α := {
-  σ := (α× s.σ)
-  state := (reset.default, s.state)
-  transition st :=
-    let (out0, s_st) := st
-    let (out1, s_st') := s.transition s_st
-    (out0, (out1, s_st'))
-}
-
-def increasing: Mealy Nat where
-  σ := Nat
-  state := default
-  transition s := (s,s+1)
+abbrev delay1 [reset: Inhabited α] (s:Mealy α): Mealy α := s.cons reset.default
 
 section CachedMealy
 
@@ -579,6 +565,7 @@ unsafe def _root_.NotSynthesizable.CachedMealy.merge (a : CachedMealy α) (b : C
     ((a', b'), (aSt', bSt'))
   cache := runST' (σ:=Unit) do return CachedMealyCache.some <| ← ST.mkRef <| Option.none
 
+open NotSynthesizable.Hdlean (increasing) in
 def increasingDbg := increasing.map (dbg_trace "."; .)
 
 open NotSynthesizable in
@@ -679,7 +666,7 @@ def accAdder [Inhabited α] [Add α] (i: Mealy α): Mealy α := i.scan fun i st 
   (st, v)
 
 section
-open NotSynthesizable
+open NotSynthesizable Hdlean
 
 #eval by exact increasing |>.repr' (inst:=inferInstanceAs (Repr Nat)) 0
 #eval simulate' increasing 10
@@ -718,6 +705,8 @@ instance: Arrow MealyA where
     bc b |>.merge d
 
 namespace Mealy.Test
+
+open NotSynthesizable.Hdlean (increasing)
 
 def adderA [Inhabited α] [Add α]: MealyA α α := accAdder
 
@@ -758,21 +747,21 @@ def accAdder': MealyA Nat Nat :=
 
 section
 
-open Arrow ArrowLoop NotSynthesizable in
+open Arrow ArrowLoop NotSynthesizable Hdlean in
 #eval
   let m := loop (first accAdder' >>> Category.id (cat:=MealyA) (a:=(Nat× Nat)))
   simulate' (O:=Nat) (m <| (fun i => #[1,2,3,4,5,6][i]!) <$> increasing) 6 |>.map id
-open Arrow ArrowLoop NotSynthesizable in
+open Arrow ArrowLoop NotSynthesizable Hdlean in
 #eval
   let m := accAdder' >>> (loop (Category.id (a:=(Nat× Nat))))
   simulate (O:=Nat) (m <| (let v := #[1,2,3,4,5,6][.]!; dbg_trace v; v) <$> increasing) 1 |>.map fun x => x.fst.repr 0
 
-open NotSynthesizable in
+open NotSynthesizable Hdlean in
 #eval
   simulate' (accAdder' ((let v := #[0,1,2,3,4,5][.]!; dbg_trace v; v) <$> increasing)) 6
 open NotSynthesizable in
 
-open Arrow ArrowLoop NotSynthesizable in
+open Arrow ArrowLoop NotSynthesizable Hdlean in
 #eval
   let m: MealyA Nat Nat := loop (first accAdder' >>> Category.id (a:=(Nat× Nat)))
   simulate (O:=Nat) (m ((#[1,2,3,4,5,6][.]!) <$> increasing)) 6
@@ -782,7 +771,7 @@ open Arrow ArrowLoop NotSynthesizable in
     exact inferInstance
   )
 
-open Arrow ArrowLoop NotSynthesizable in
+open Arrow ArrowLoop NotSynthesizable Hdlean in
 #eval
   let m := accAdder' >>> (loop (Category.id (a:=(Nat× Nat))))
   simulate (O:=Nat) (m ((#[1,2,3,4,5,6][.]!)<$>increasing)) 6
@@ -808,18 +797,18 @@ def Mealy.EqualNow (a b : Mealy α) : Prop := a.value = b.value
 end MealyA
 
 open NotSynthesizable in
-def QuotientMealy.pointwise_eq (a b : Mealy O) : Prop := ∀ i, (a.get i).1 = (b.get i).1
+def QMealy.pointwise_eq (a b : Mealy O) : Prop := ∀ i, (a.get i).1 = (b.get i).1
 
-instance {O: Type u} : Equivalence (QuotientMealy.pointwise_eq (O:=O)) where
+instance {O: Type u} : Equivalence (QMealy.pointwise_eq (O:=O)) where
     refl _ _ := rfl
     symm h i := Eq.symm (h i)
     trans a b i := Eq.trans (a i) (b i)
 
-open NotSynthesizable in
-instance instSetoid_pointwise_eq : Setoid (Mealy O) where
-  r := QuotientMealy.pointwise_eq
+instance QMealy.instSetoid_pointwise_eq : Setoid (Mealy O) where
+  r := QMealy.pointwise_eq
   iseqv := instEquivalenceMealyPointwise_eq
 
+open QMealy in
 abbrev QMealy (O : Type u) := Quotient (instSetoid_pointwise_eq (O:=O))
 
 namespace QMealy
