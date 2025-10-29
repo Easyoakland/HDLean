@@ -397,17 +397,12 @@ open NotSynthesizable Hdlean
 
 @[simp] theorem get_destruct_eq_get_succ (m : Mealy O) (i:Nat) : ((m.destruct.snd).get i).fst = (m.get (i+1)).fst := rfl
 
-theorem scan_get (a b : Mealy O) (f : O → σ → (β×σ)) (reset : σ) (h:∀ i, a.get i = b.get i): ∀ i, (a.scan f reset).get i = (b.scan f reset).get i := fun i => by
-  induction i
-  case zero =>
-    have : a = b := congrArg Prod.snd (h 0)
-    rw [this]
-  case succ i ih =>
-    rw [get_succ_eq_get_destruct]
-    rw [ih]
-    rw [← get_succ_eq_get_destruct]
+@[simp] theorem eq_of_eq_get (a b : Mealy O) (h:∀ i, a.get i = b.get i): a = b := by
+  have := h 0
+  simp at this
+  exact this.2
 
-theorem scan_get' (a b : Mealy O) (f : O → σ → (β×σ)) (reset : σ) (h:∀ i, (a.get i).fst = (b.get i).fst): ∀ i, ((a.scan f reset).get i).fst = ((b.scan f reset).get i).fst := fun i => by
+theorem fst_get_scan_eq_of_fst_get_eq (a b : Mealy O) (f : O → σ → (β×σ)) (reset : σ) (h:∀ i, (a.get i).fst = (b.get i).fst): ∀ i, ((a.scan f reset).get i).fst = ((b.scan f reset).get i).fst := fun i => by
   induction i generalizing a b reset <;> simp
   case zero =>
     have : a.destruct.fst = b.destruct.fst := h 0
@@ -814,7 +809,7 @@ abbrev QMealy (O : Type u) := Quotient (instSetoid_pointwise_eq (O:=O))
 namespace QMealy
 def _root_.Quotient.map [ra:Setoid α] [rb:Setoid β] (q:Quotient ra) (f : α → β) (h:∀ a b, a ≈ b → f a ≈ f b): Quotient rb := q.liftOn (fun x => Quotient.mk' <| f x) (fun a b h2 => Quotient.sound (h a b h2))
 
-def scan {α β σ: Type u} (s : QMealy α) (f : α → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : QMealy β := s.map (·.scan f reset) (fun a b h i => by rw [scan_get']; exact h)
+def scan {α β σ: Type u} (s : QMealy α) (f : α → σ → (β×σ)) (reset : σ := by exact inferInstanceAs (Inhabited _) |>.default) : QMealy β := s.map (·.scan f reset) (fun a b h i => by rw [fst_get_scan_eq_of_fst_get_eq]; exact h)
 
 protected def pure (a : α) : QMealy α := Quotient.mk' <| Mealy.pure a
 
