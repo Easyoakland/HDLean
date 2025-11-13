@@ -1,6 +1,6 @@
 import Hdlean
 
-instance : Coe Bool (BitVec n) where
+@[simp] instance : Coe Bool (BitVec n) where
   coe
     | .true => 1
     | .false => 0
@@ -126,7 +126,7 @@ def BitVec.dfoldl' {β : Nat → Type u} (f : ∀ (i : Nat), β i → Bool → �
   | 0,   _ => init
   | n+1, v => f n (dfoldl' f init (v.extractLsb' 0 n)) v.msb
 
-@[simp] theorem List.mem_of_mem_dropLast {l:List α} (hmem:x ∈ l.dropLast): x ∈ l := by
+theorem List.mem_of_mem_dropLast {l:List α} (hmem:x ∈ l.dropLast): x ∈ l := by
   unfold List.dropLast at hmem
   split at hmem
   . exact hmem
@@ -138,41 +138,8 @@ def BitVec.dfoldl' {β : Nat → Type u} (f : ∀ (i : Nat), β i → Bool → �
     | .inl h => .inl h
     | .inr h => .inr <| List.mem_of_mem_dropLast h
 
--- set_option linter.unusedVariables false in -- keep hinduct and hbase names
--- /-- Like  List.foldlRecOn, but for `Vector`s.
---   Possible (but inefficient) to use for actual computation.
--- -/
--- def Vector.dfoldlRecOn {β : Nat → Sort _} {motive : (n:Nat) → β n → Sort _} : ∀ (v : Vector α n) (op : ∀ (i : Nat), β i → α → β (i+1)) {b : β 0} (hbase : motive 0 b)
---     (hinduct : ∀ (i:Nat) (b : β i) (_ : motive i b) (a : α) (_ : a ∈ v), motive (i+1) (op i b a)), motive n (Vector.dfoldl op b v) := fun xs => xs.elimAsList fun
---     -- Analogue of
---     -- | [], _, _, hb, _ => hb
---     | [], h_len, _, hb, _ => by
---       subst h_len
---       exact hb
---     -- Analogue of
---     -- | hd :: tl, op, b, hb, hl =>
---     --   foldlRecOn tl op (hl b hb hd mem_cons_self)
---     --     fun y hy x hx => hl y hy x (mem_cons_of_mem hd hx)
---     | hd :: tl, h_len, op, hb, hl => by
---       rename_i b
---       -- termination checker
---       have : tl.length < n := by
---         rw [List.length_cons] at h_len
---         omega
---       subst h_len
---       -- actual proof:
---       unfold dfoldl
---       -- Build the vector without the last element
---       let nonLast := Vector.mk (n:=tl.length) (hd :: tl).dropLast.toArray (by simp)
---       have ih := dfoldlRecOn nonLast op hb fun i b hb a ha =>
---         hl i b hb a (by
---           simp [nonLast] at ha
---           simp [ha]
---         )
---       -- Apply hinduct for the last element
---       exact hl tl.length _ ih _ (by simp)
 
-@[simp] theorem Vector.mem_of_mem_pop {v : Vector α n} (h : a ∈ v.pop): a ∈ v := by
+theorem Vector.mem_of_mem_pop {v : Vector α n} (h : a ∈ v.pop): a ∈ v := by
   simp only [Vector.pop, Array.pop, mem_mk, List.mem_toArray] at h
   have := List.mem_of_mem_dropLast h
   rw [← Vector.toList] at this
@@ -185,7 +152,7 @@ set_option linter.unusedVariables false in -- keep hinduct and hbase names
 def Vector.dfoldlRecOn {β : Nat → Sort _} {motive : (n:Nat) → β n → Sort _}
     : ∀ {n : Nat} (v : Vector α n) (op : ∀ (i : Nat), β i → α → β (i+1))
       {b : β 0} (hbase : motive 0 b)
-      (hinduct : ∀ (i : Nat) (b : β i) (_ : motive i b) (a : α) (_ : a ∈ v), motive (i+1) (op i b a)),
+      (hinduct : ∀ (i : Fin n) (b : β i) (_ : motive i b) (a : α) (_ : a = v[i]), motive (i+1) (op i b a)),
       motive n (Vector.dfoldl op b v) := by
   intro n
   induction n with
@@ -201,26 +168,11 @@ def Vector.dfoldlRecOn {β : Nat → Sort _} {motive : (n:Nat) → β n → Sort
     let init := v.pop
     -- Apply IH to get motive for the recursive call
     have ih_result := ih init op hbase  fun i b' hb' a ha =>
-      let ret := hinduct i b' hb' a (Vector.mem_of_mem_pop ha)
+      have : init[i] = v[i.castSucc] := Vector.getElem_pop _
+      let ret := hinduct i.castSucc b' hb' a (Eq.trans ha this)
       ret
     -- Apply hinduct for the last element
-    exact hinduct n (Vector.dfoldl op b init) ih_result last Vector.back_mem
-
-#check List.foldlRecOn
-
-#eval #v[(1,1),(2,2),(3,3),(4,4),(5,5)].dfoldl (fun i prev el => dbg_trace "op: {i} on {el}" ; el :: prev) (β := fun _ => (List (Nat × Nat))) ([])
-
-#eval Vector.dfoldlRecOn
-  (motive:=fun n _fold_res => Vector (Nat×Nat) n)
-  #v[(1,1),(2,2),(3,4),(5,5),(6,6),(7,7)] (fun _i (_prev: Id _) el => dbg_trace "1: {_i}:{_prev}:{el}"; el)
-  (b:=dbg_trace "b"; default)
-  (dbg_trace "base"; default) (fun _i _fold_res ih el _mem => dbg_trace "2: {_i}:{_fold_res}:{el}"; ih.push el)
-
-#eval List.foldlRecOn
-  (motive:=fun _fold_res => List (Nat× Nat))
-  [(1,1),(2,2),(3,4),(5,5),(6,6),(7,7),(8,8)] (fun (_prev: Id _) el => dbg_trace "1: {_prev}:{el}"; el)
-  (b:=dbg_trace "b"; default)
-  (dbg_trace "base"; default) (fun _fold_res ih el _mem => dbg_trace "2: {_fold_res}:{el}"; ih.cons el)
+    exact hinduct ⟨n, Nat.lt_add_one n⟩ (Vector.dfoldl op b init) ih_result last Vector.back_eq_getElem
 
 def Vector.toBitVec (v: Vector Bool n): BitVec n :=
   v.dfoldl (β:=BitVec) (init:=0) fun _ b bit =>
@@ -228,7 +180,7 @@ def Vector.toBitVec (v: Vector Bool n): BitVec n :=
 
 def Vector.toBitVec' (v: Vector Bool n): BitVec n :=
   v.dfoldl (β:=BitVec) (init:=0) fun _ b bit =>
-    cast (by grind only) <| (Coe.coe bit : BitVec 1).append b
+    BitVec.cast (by grind only) <| (Coe.coe bit : BitVec 1).append b
 
 example : #v[].toBitVec = 0#0 := by native_decide
 example : #v[].toBitVec = 1#0 := by native_decide
@@ -253,11 +205,11 @@ example :  (1 : BitVec _).toVector = #v[1]:= by native_decide
 example :  (0#3 : BitVec _).toVector = #v[0,0,0]:= by native_decide
 example :  (7#3 : BitVec _).toVector = #v[1,1,1]:= by native_decide
 example :  (1#4 : BitVec _).toVector = #v[0,0,0,1]:= by native_decide
-#eval (1#4).toVector
+example : (1#4).toVector = #v[0,0,0,1] := rfl
 example :  (5#4 : BitVec _).toVector = #v[0,1,0,1]:= by native_decide
-#eval (8#3).toVector.toBitVec
+example : (8#3).toVector.toBitVec = 8#3 := rfl
 
-theorem BitVec.toVector_idx_eq (b: BitVec n) (i : Fin n): b.toVector'[i] = b[i] := by
+@[simp] theorem BitVec.toVector_idx_eq (b: BitVec n) (i : Fin n): b.toVector'[i] = b[i] := by
   simp [BitVec.toVector']
   induction n
   case zero => grind only
@@ -285,156 +237,48 @@ theorem BitVec.toVector_idx_eq (b: BitVec n) (i : Fin n): b.toVector'[i] = b[i] 
       . grind
       . omega
 
-/- theorem Vector.toBitVec_idx_eq (v: Vector Bool n) (i : Fin n): v.toBitVec'[i] = v[i] := by
+@[simp] theorem Vector.toBitVec_idx_eq (v: Vector Bool n) (i : Fin n): v.toBitVec'[i] = v[i] := by
   simp [Vector.toBitVec']
-  induction n
-  case zero => exact Fin.elim0 i
-  case succ n a =>
-  -- have : cast ⋯ ((↑bit) ++ b) = ((↑bit) ++ b) := cast_eq
-  -- rw [cast_eq]
-  unfold dfoldl
-  if h : i = n then
-    simp [h]
-    -- have append_eq : (cast (by grind only) <| (Coe.coe v.back : BitVec 1).append (v.pop.toBitVec')) =
-    --               (Coe.coe v.back : BitVec 1).append (v.pop.toBitVec') := by
-    --   simp [cast_eq]
-    -- rw [append_eq]
-    simp [(. ++ .), BitVec.append]
-    grind
-  else
-    _
-  admit -/
-
-/- theorem toBitVecToVector (v : Vector Bool n) : v.toBitVec.toVector = v := sorry
--//-
-by
-   simp [Vector.toBitVec, BitVec.toVector, Vector.dfoldl, BitVec.dfoldl']
-  induction n
-  . simp
-  case _ n ih =>
-    simp only
-    -- unfold Coe.coe instCoeBoolBitVec_rISCV; simp
-    -- unfold BitVec.dfoldl.go BitVec.dfoldl.go; simp
-    -- unfold Vector.dfoldl.go; simp
-    if h2:v[0] = false then
-      -- have : v.get 0 = false := h2
-      -- rw [this]; simp only
-      have : v =
-        have : n + 1 = (1 + (n + 1 - 1)) := by omega
-        this ▸ (#v[false] ++ v.tail) := sorry
-      have := ih v.tail
-      -- unfold Vector.dfoldl.go; simp
-      if h3: 0 < n then
-        simp []
-        admit
-      else
-        _
-      -- unfold BitVec.instGetElemNatBoolLt BitVec.getLsb; simp
-      -- unfold decide instDecidableEqNat Nat.decEq; simp
-      admit
+  apply Vector.dfoldlRecOn v _
+    (motive := fun n' (bv : BitVec n') =>
+      ∀ (i' : Fin n'), (i'_lt_n:i' < n) → bv[i'] = v[i'])
+    (hbase := fun i _ => i.elim0)
+  case i'_lt_n => simp
+  case hinduct =>
+    intros n' bv hi a a_getElem_v i' i'_lt_n
+    simp only [Fin.getElem_fin, BitVec.getElem_cast]
+    rw [BitVec.getElem_append]
+    -- Either the index extracts a bit from before appending
+    if h: i' < n'.val then
+      let i' := i'.castLT h
+      simp [h]
+      exact hi i' _
+    -- Or the new bit
     else
-      have h2: v[0] = true := by simp only [h2]
-      admit
-    -- have : ∀ h, (Vector.dfoldl.go
-    --   (fun x b bit =>
-    --     b ++
-    --       match bit with
-    --       | true => 1#1
-    --       | false => 0#1)
-    --   v 0 h 0#0) = (Vector.dfoldl.go
-    --   (fun x b bit =>
-    --     b ++
-    --       match bit with
-    --       | true => 1#1
-    --       | false => 0#1)
-    --   v 0 h 0#0) := fun h => rfl
-    -- rw [this] -/
+      have : i'.val = n'.val := by omega
+      have : v[i'.val] = v[n'.val] := by simp only [this]
+      rw [a_getElem_v, this]
+      simp [h]
+      cases v[n'] <;> simp only [BitVec.getElem_zero, BitVec.getElem_one, decide_eq_true_eq]
+      omega
 
-/- theorem toBitVecToVector (v : Vector Bool n) : v.toBitVec.toVector = v := by
-  simp [Vector.toBitVec, BitVec.toVector, Vector.dfoldl, BitVec.dfoldl]
-  induction n
-  . simp [BitVec.dfoldl.go]
-  . rename_i n h
-    -- unfold Coe.coe instCoeBoolBitVec_rISCV; simp
-    -- unfold BitVec.dfoldl.go BitVec.dfoldl.go; simp
-    unfold Vector.dfoldl.go; simp
-    if h2:v[0] = false then
-      -- have : v.get 0 = false := h2
-      -- rw [this]; simp only
-      have : v =
-        have : n + 1 = (1 + (n + 1 - 1)) := by omega
-        this ▸ (#v[false] ++ v.tail) := sorry
-      have := h v.tail
-      unfold Vector.dfoldl.go; simp
-      if h3: 0 < n then
-        simp [h3]
-        admit
-      else
-        _
-      -- unfold BitVec.instGetElemNatBoolLt BitVec.getLsb; simp
-      -- unfold decide instDecidableEqNat Nat.decEq; simp
-      admit
-    else
-      have h2: v[0] = true := by simp only [h2]
-      admit
-    -- have : ∀ h, (Vector.dfoldl.go
-    --   (fun x b bit =>
-    --     b ++
-    --       match bit with
-    --       | true => 1#1
-    --       | false => 0#1)
-    --   v 0 h 0#0) = (Vector.dfoldl.go
-    --   (fun x b bit =>
-    --     b ++
-    --       match bit with
-    --       | true => 1#1
-    --       | false => 0#1)
-    --   v 0 h 0#0) := fun h => rfl
-    rw [this] -/
-/- theorem toBitVecToVector (v : Vector Bool n) : v.toBitVec.toVector = v := by
-  simp [Vector.toBitVec, BitVec.toVector, Vector.dfoldl, BitVec.dfoldl]
-  induction n
-  . simp [BitVec.dfoldl.go]
-  . rename_i n h
-    -- unfold Coe.coe instCoeBoolBitVec_rISCV; simp
-    -- unfold BitVec.dfoldl.go BitVec.dfoldl.go; simp
-    unfold Vector.dfoldl.go; simp
-    if h2:v[0] = false then
-      -- have : v.get 0 = false := h2
-      -- rw [this]; simp only
-      have : v =
-        have : n + 1 = (1 + (n + 1 - 1)) := by omega
-        this ▸ (#v[false] ++ v.tail) := sorry
-      have := h v.tail
-      unfold Vector.dfoldl.go; simp
-      if h3: 0 < n then
-        simp [h3]
-        admit
-      else
-        _
-      -- unfold BitVec.instGetElemNatBoolLt BitVec.getLsb; simp
-      -- unfold decide instDecidableEqNat Nat.decEq; simp
-      admit
-    else
-      have h2: v[0] = true := by simp only [h2]
-      admit
-    -- have : ∀ h, (Vector.dfoldl.go
-    --   (fun x b bit =>
-    --     b ++
-    --       match bit with
-    --       | true => 1#1
-    --       | false => 0#1)
-    --   v 0 h 0#0) = (Vector.dfoldl.go
-    --   (fun x b bit =>
-    --     b ++
-    --       match bit with
-    --       | true => 1#1
-    --       | false => 0#1)
-    --   v 0 h 0#0) := fun h => rfl
-    rw [this]
--/
+-- #check BitVec.eq_of_getElem_eq
+-- #check Vector.ext
+@[simp] theorem toBitVecToVector (v : Vector Bool n) : v.toBitVec'.toVector' = v := by
+  suffices ∀ (i : Fin n), v.toBitVec'.toVector'[i] = v[i] by
+    apply Vector.ext
+    intro i i_lt_n
+    exact this ⟨i, i_lt_n⟩
+  intro i
+  rw [BitVec.toVector_idx_eq, Vector.toBitVec_idx_eq]
 
-/- theorem toVectorToBitVec (b : BitVec n) : b.toVector.toBitVec = b := sorry -/
+theorem toVectorToBitVec (bv : BitVec n) : bv.toVector'.toBitVec' = bv := by
+  suffices ∀ (i : Fin n), bv.toVector'.toBitVec'[i] = bv[i] by
+    apply BitVec.eq_of_getElem_eq
+    intro i i_lt_n
+    exact this ⟨i, i_lt_n⟩
+  intro i
+  rw [Vector.toBitVec_idx_eq, BitVec.toVector_idx_eq]
 
 instance : Coe (Vector Bool n) (BitVec n) := ⟨Vector.toBitVec⟩
 instance : Coe (BitVec n) (Vector Bool n) := ⟨BitVec.toVector⟩
